@@ -93,7 +93,7 @@ def train(args):
             print('Loaded vae checkpoint')
             vae.load_state_dict(torch.load(os.path.join(train_config['task_name'],
                                                         train_config['vqvae_autoencoder_ckpt_name']),
-                                           map_location=device))
+                                           map_location=device, weights_only=True))
         else:
             raise Exception('VAE checkpoint not found and use_latents was disabled')
     

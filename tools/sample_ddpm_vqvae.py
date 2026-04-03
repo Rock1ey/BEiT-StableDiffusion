@@ -81,7 +81,7 @@ def infer(args):
         print('Loaded unet checkpoint')
         model.load_state_dict(torch.load(os.path.join(train_config['task_name'],
                                                       train_config['ldm_ckpt_name']),
-                                         map_location=device))
+                                         map_location=device, weights_only=True))
     # Create output directories
     if not os.path.exists(train_config['task_name']):
         os.mkdir(train_config['task_name'])
@@ -96,7 +96,7 @@ def infer(args):
         print('Loaded vae checkpoint')
         vae.load_state_dict(torch.load(os.path.join(train_config['task_name'],
                                                     train_config['vqvae_autoencoder_ckpt_name']),
-                                       map_location=device), strict=True)
+                                       map_location=device, weights_only=True), strict=True)
     with torch.no_grad():
         sample(model, scheduler, train_config, diffusion_model_config,
                autoencoder_model_config, diffusion_config, dataset_config, vae)

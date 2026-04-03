@@ -21,7 +21,9 @@ class vgg16(torch.nn.Module):
     def __init__(self, requires_grad=False, pretrained=True):
         super(vgg16, self).__init__()
         # Load pretrained vgg model from torchvision
-        vgg_pretrained_features = torchvision.models.vgg16(pretrained=pretrained).features
+        vgg_pretrained_features = torchvision.models.vgg16(
+            weights=torchvision.models.VGG16_Weights.IMAGENET1K_V1 if pretrained else None
+        ).features
         self.slice1 = torch.nn.Sequential()
         self.slice2 = torch.nn.Sequential()
         self.slice3 = torch.nn.Sequential()
@@ -91,7 +93,7 @@ class LPIPS(nn.Module):
         model_path = os.path.abspath(
             os.path.join(inspect.getfile(self.__init__), '..', 'weights/v%s/%s.pth' % (version, net)))
         print('Loading model from: %s' % model_path)
-        self.load_state_dict(torch.load(model_path, map_location=device), strict=False)
+        self.load_state_dict(torch.load(model_path, map_location=device, weights_only=True), strict=False)
         ########################
         
         # Freeze all parameters
