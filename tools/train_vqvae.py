@@ -12,6 +12,7 @@ from models.discriminator import Discriminator
 from torch.utils.data.dataloader import DataLoader
 from dataset.mnist_dataset import MnistDataset
 from dataset.celeb_dataset import CelebDataset
+from dataset.hemit_dataset import HemitDataset
 from torch.optim import Adam
 from torchvision.utils import make_grid
 
@@ -47,6 +48,7 @@ def train(args):
     im_dataset_cls = {
         'mnist': MnistDataset,
         'celebhq': CelebDataset,
+        'hemit': HemitDataset,
     }.get(dataset_config['name'])
     
     im_dataset = im_dataset_cls(split='train',
