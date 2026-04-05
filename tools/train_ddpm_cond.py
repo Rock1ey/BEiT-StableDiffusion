@@ -43,6 +43,7 @@ def train(args):
     text_tokenizer = None
     text_model = None
     empty_text_embed = None
+    dino_model = None
     condition_types = []
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
     if condition_config is not None:
@@ -57,6 +58,13 @@ def train(args):
                 text_tokenizer, text_model = get_tokenizer_and_model(condition_config['text_condition_config']
                                                                      ['text_embed_model'], device=device)
                 empty_text_embed = get_text_representation([''], text_tokenizer, text_model, device)
+        if 'dino' in condition_types:
+            validate_dino_config(condition_config)
+            from utils.dino_utils import get_dino_model, get_dino_representation
+            dino_model = get_dino_model(device)
+            print('Loaded DINOv2 model for cross-attention conditioning')
+
+    use_patches = get_config_value(dataset_config, 'patch_mode', 'none')
             
     im_dataset_cls = {
         'mnist': MnistDataset,
@@ -71,7 +79,8 @@ def train(args):
                                 use_latents=True,
                                 latent_path=os.path.join(train_config['task_name'],
                                                          train_config['vqvae_latent_dir_name']),
-                                condition_config=condition_config)
+                                condition_config=condition_config,
+                                **({'patch_mode': use_patches} if dataset_config['name'] == 'hemit' else {}))
     
     data_loader = DataLoader(im_dataset,
                              batch_size=train_config['ldm_batch_size'],
@@ -146,6 +155,16 @@ def train(args):
                 im_drop_prob = get_config_value(condition_config['image_condition_config'],
                                                       'cond_drop_prob', 0.)
                 cond_input['image'] = drop_image_condition(cond_input_image, im, im_drop_prob)
+            if 'dino' in condition_types:
+                with torch.no_grad():
+                    assert 'image' in cond_input, 'DINOv2 conditioning requires image condition input'
+                    from utils.dino_utils import get_dino_representation
+                    dino_input = cond_input['image'].to(device)
+                    dino_features = get_dino_representation(dino_input, dino_model, device)
+                    dino_drop_prob = get_config_value(condition_config['dino_condition_config'],
+                                                      'cond_drop_prob', 0.)
+                    dino_features = drop_dino_condition(dino_features, im, dino_drop_prob)
+                    cond_input['dino'] = dino_features
             if 'class' in condition_types:
                 assert 'class' in cond_input, 'Conditioning Type Class but no class conditioning input present'
                 validate_class_config(condition_config)

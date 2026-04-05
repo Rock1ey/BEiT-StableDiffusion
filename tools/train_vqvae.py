@@ -54,7 +54,9 @@ def train(args):
     im_dataset = im_dataset_cls(split='train',
                                 im_path=dataset_config['im_path'],
                                 im_size=dataset_config['im_size'],
-                                im_channels=dataset_config['im_channels'])
+                                im_channels=dataset_config['im_channels'],
+                                **({'patch_mode': dataset_config.get('patch_mode', 'none')}
+                                   if dataset_config['name'] == 'hemit' else {}))
     
     data_loader = DataLoader(im_dataset,
                              batch_size=train_config['autoencoder_batch_size'],

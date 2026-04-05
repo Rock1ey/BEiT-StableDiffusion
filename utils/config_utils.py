@@ -11,6 +11,13 @@ def validate_text_config(condition_config):
         "Text conditioning desired but text condition config missing"
     assert 'text_embed_dim' in condition_config['text_condition_config'], \
         "text_embed_dim missing in text condition config"
+
+
+def validate_dino_config(condition_config):
+    assert 'dino_condition_config' in condition_config, \
+        "DINOv2 conditioning desired but dino condition config missing"
+    assert 'dino_embed_dim' in condition_config['dino_condition_config'], \
+        "dino_embed_dim missing in dino condition config"
     
 
 def validate_image_config(condition_config):

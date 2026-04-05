@@ -41,7 +41,9 @@ def infer(args):
     im_dataset = im_dataset_cls(split='train',
                                 im_path=dataset_config['im_path'],
                                 im_size=dataset_config['im_size'],
-                                im_channels=dataset_config['im_channels'])
+                                im_channels=dataset_config['im_channels'],
+                                **({'patch_mode': dataset_config.get('patch_mode', 'none')}
+                                   if dataset_config['name'] == 'hemit' else {}))
     
     # This is only used for saving latents. Which as of now
     # is not done in batches hence batch size 1
@@ -99,7 +101,12 @@ def infer(args):
             count = 0
             for idx, im in enumerate(tqdm(data_loader)):
                 encoded_output, _ = model.encode(im.float().to(device))
-                fname_latent_map[im_dataset.images[idx]] = encoded_output.cpu()
+                # Use get_latent_key for grid-mode patch datasets (unique key per patch)
+                if hasattr(im_dataset, 'get_latent_key'):
+                    key = im_dataset.get_latent_key(idx)
+                else:
+                    key = im_dataset.images[idx]
+                fname_latent_map[key] = encoded_output.cpu()
                 # Save latents every 1000 images
                 if (count+1) % 1000 == 0:
                     pickle.dump(fname_latent_map, open(os.path.join(latent_path,

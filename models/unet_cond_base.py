@@ -36,7 +36,9 @@ class Unet(nn.Module):
         self.class_cond = False
         self.text_cond = False
         self.image_cond = False
+        self.dino_cond = False
         self.text_embed_dim = None
+        self.dino_embed_dim = None
         self.condition_config = get_config_value(model_config, 'condition_config', None)
         if self.condition_config is not None:
             assert 'condition_types' in self.condition_config, 'Condition Type not provided in model config'
@@ -55,6 +57,19 @@ class Unet(nn.Module):
                     'image_condition_input_channels']
                 self.im_cond_output_ch = self.condition_config['image_condition_config'][
                     'image_condition_output_channels']
+            if 'dino' in condition_types:
+                validate_dino_config(self.condition_config)
+                self.dino_cond = True
+                self.dino_embed_dim = self.condition_config['dino_condition_config']['dino_embed_dim']
+
+        # Determine cross-attention context dimension (text or dino, not both)
+        self.use_cross_attn = self.text_cond or self.dino_cond
+        if self.text_cond:
+            self.context_dim = self.text_embed_dim
+        elif self.dino_cond:
+            self.context_dim = self.dino_embed_dim
+        else:
+            self.context_dim = None
         if self.class_cond:
             # Rather than using a special null class we dont add the
             # class embedding information for unconditional generation
@@ -72,7 +87,7 @@ class Unet(nn.Module):
                                             self.down_channels[0], kernel_size=3, padding=1)
         else:
             self.conv_in = nn.Conv2d(im_channels, self.down_channels[0], kernel_size=3, padding=1)
-        self.cond = self.text_cond or self.image_cond or self.class_cond
+        self.cond = self.text_cond or self.image_cond or self.class_cond or self.dino_cond
         ###################################
         
         # Initial projection from sinusoidal time embedding
@@ -93,8 +108,8 @@ class Unet(nn.Module):
                                         num_heads=self.num_heads,
                                         num_layers=self.num_down_layers,
                                         attn=self.attns[i], norm_channels=self.norm_channels,
-                                        cross_attn=self.text_cond,
-                                        context_dim=self.text_embed_dim))
+                                        cross_attn=self.use_cross_attn,
+                                        context_dim=self.context_dim))
         
         self.mids = nn.ModuleList([])
         # Build the Midblocks
@@ -103,8 +118,8 @@ class Unet(nn.Module):
                                       num_heads=self.num_heads,
                                       num_layers=self.num_mid_layers,
                                       norm_channels=self.norm_channels,
-                                      cross_attn=self.text_cond,
-                                      context_dim=self.text_embed_dim))
+                                      cross_attn=self.use_cross_attn,
+                                      context_dim=self.context_dim))
                 
         self.ups = nn.ModuleList([])
         # Build the Upblocks
@@ -115,8 +130,8 @@ class Unet(nn.Module):
                             num_heads=self.num_heads,
                             num_layers=self.num_up_layers,
                             norm_channels=self.norm_channels,
-                            cross_attn=self.text_cond,
-                            context_dim=self.text_embed_dim))
+                            cross_attn=self.use_cross_attn,
+                            context_dim=self.context_dim))
         
         self.norm_out = nn.GroupNorm(self.norm_channels, self.conv_out_channels)
         self.conv_out = nn.Conv2d(self.conv_out_channels, im_channels, kernel_size=3, padding=1)
@@ -160,6 +175,10 @@ class Unet(nn.Module):
             assert 'text' in cond_input, \
                 "Model initialized with text conditioning but cond_input has no text information"
             context_hidden_states = cond_input['text']
+        if self.dino_cond:
+            assert 'dino' in cond_input, \
+                "Model initialized with DINOv2 conditioning but cond_input has no dino information"
+            context_hidden_states = cond_input['dino']
         down_outs = []
         
         for idx, down in enumerate(self.downs):
