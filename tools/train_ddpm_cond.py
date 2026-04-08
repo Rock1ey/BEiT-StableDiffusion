@@ -84,7 +84,10 @@ def train(args):
     
     data_loader = DataLoader(im_dataset,
                              batch_size=train_config['ldm_batch_size'],
-                             shuffle=True)
+                             shuffle=True,
+                             num_workers=get_config_value(train_config, 'num_workers', 4),
+                             pin_memory=True,
+                             persistent_workers=True)
     
     # Instantiate the unet model
     model = Unet(im_channels=autoencoder_model_config['z_channels'],
@@ -113,6 +116,23 @@ def train(args):
     optimizer = Adam(model.parameters(), lr=train_config['ldm_lr'])
     criterion = torch.nn.MSELoss()
     
+    # Resume from checkpoint if requested
+    start_epoch = 0
+    ckpt_path = os.path.join(train_config['task_name'], train_config['ldm_ckpt_name'])
+    if args.resume and os.path.exists(ckpt_path):
+        print('Resuming from checkpoint: {}'.format(ckpt_path))
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+            model.load_state_dict(ckpt['model_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            start_epoch = ckpt['epoch']
+            print('Resumed from epoch {}'.format(start_epoch))
+        else:
+            # Legacy checkpoint (plain state_dict)
+            model.load_state_dict(ckpt)
+            start_epoch = get_config_value(train_config, 'resume_from_epoch', 0)
+            print('Loaded legacy checkpoint, resuming from epoch {}'.format(start_epoch))
+    
     # Load vae and freeze parameters ONLY if latents already not saved
     if not im_dataset.use_latents:
         assert vae is not None
@@ -120,7 +140,7 @@ def train(args):
             param.requires_grad = False
     
     # Run training
-    for epoch_idx in range(num_epochs):
+    for epoch_idx in range(start_epoch, num_epochs):
         losses = []
         for data in tqdm(data_loader):
             cond_input = None
@@ -193,7 +213,12 @@ def train(args):
         print('Finished epoch:{} | Loss : {:.4f}'.format(
             epoch_idx + 1,
             np.mean(losses)))
-        torch.save(model.state_dict(), os.path.join(train_config['task_name'],
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': epoch_idx + 1,
+            'loss': np.mean(losses),
+        }, os.path.join(train_config['task_name'],
                                                     train_config['ldm_ckpt_name']))
     
     print('Done Training ...')
@@ -203,5 +228,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ddpm training')
     parser.add_argument('--config', dest='config_path',
                         default='config/celebhq_text_cond_clip.yaml', type=str)
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume training from latest checkpoint')
     args = parser.parse_args()
     train(args)

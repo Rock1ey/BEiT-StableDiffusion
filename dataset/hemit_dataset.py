@@ -33,6 +33,7 @@ class HemitDataset(Dataset):
         self.latent_maps = None
         self.use_latents = False
         self.patch_mode = patch_mode
+        self.use_precut = False
 
         self.condition_types = [] if condition_config is None else condition_config['condition_types']
 
@@ -43,6 +44,8 @@ class HemitDataset(Dataset):
         self.patch_keys = None       # unique key per patch for latent caching
         if self.patch_mode == 'grid':
             self._build_grid_index()
+            # Check for pre-cut patches directory
+            self._try_precut_patches()
 
         # Random crop mode is incompatible with pre-cached latents
         if self.patch_mode == 'random':
@@ -89,6 +92,48 @@ class HemitDataset(Dataset):
 
         print('Grid mode: {} images -> {} patches ({}x{} per image)'.format(
             len(orig_images), len(self.images), rows, cols))
+
+    def _try_precut_patches(self):
+        """Auto-detect pre-cut patch directories and build fast lookup."""
+        split_name = 'train' if self.split == 'train' else (
+            'test' if self.split == 'test' else 'val')
+        precut_input_dir = os.path.join(self.im_path, split_name, 'input_patches')
+        precut_label_dir = os.path.join(self.im_path, split_name, 'label_patches')
+        if os.path.isdir(precut_input_dir) and os.path.isdir(precut_label_dir):
+            # Build mapping: original_path + (y, x) -> precut patch path
+            self.precut_input_paths = []
+            self.precut_label_paths = []
+            all_ok = True
+            for idx in range(len(self.images)):
+                orig_label = self.images[idx]
+                orig_input = self.inputs[idx]
+                y, x = self.patch_positions[idx]
+                r, c = y // self.im_size, x // self.im_size
+                stem_label = os.path.splitext(os.path.basename(orig_label))[0]
+                stem_input = os.path.splitext(os.path.basename(orig_input))[0]
+                label_patch = os.path.join(precut_label_dir,
+                                           '{}_p{}_{}.png'.format(stem_label, r, c))
+                input_patch = os.path.join(precut_input_dir,
+                                           '{}_p{}_{}.png'.format(stem_input, r, c))
+                if not os.path.exists(input_patch) or not os.path.exists(label_patch):
+                    all_ok = False
+                    break
+                self.precut_input_paths.append(input_patch)
+                self.precut_label_paths.append(label_patch)
+            if all_ok:
+                self.use_precut = True
+                print('Using pre-cut patches from {}'.format(precut_input_dir))
+            else:
+                self.precut_input_paths = None
+                self.precut_label_paths = None
+                print('Pre-cut patches incomplete, falling back to on-the-fly cropping')
+
+    def _load_precut_patch(self, path):
+        """Load a pre-cut PNG patch (fast I/O)."""
+        im = Image.open(path).convert('RGB')
+        tensor = TF.to_tensor(im) * 2 - 1
+        im.close()
+        return tensor
 
     def get_latent_key(self, index):
         """Return a unique key for latent caching. Used by infer_vqvae.py."""
@@ -195,14 +240,23 @@ class HemitDataset(Dataset):
         if self.use_latents:
             latent = self.latent_maps[self.patch_keys[index]]
             if 'image' in self.condition_types:
-                cond_inputs['image'] = self._load_grid_patch(self.inputs[index], y, x)
+                if self.use_precut:
+                    cond_inputs['image'] = self._load_precut_patch(self.precut_input_paths[index])
+                else:
+                    cond_inputs['image'] = self._load_grid_patch(self.inputs[index], y, x)
             if len(self.condition_types) == 0:
                 return latent
             return latent, cond_inputs
         else:
-            label_tensor = self._load_grid_patch(self.images[index], y, x)
+            if self.use_precut:
+                label_tensor = self._load_precut_patch(self.precut_label_paths[index])
+            else:
+                label_tensor = self._load_grid_patch(self.images[index], y, x)
             if 'image' in self.condition_types:
-                cond_inputs['image'] = self._load_grid_patch(self.inputs[index], y, x)
+                if self.use_precut:
+                    cond_inputs['image'] = self._load_precut_patch(self.precut_input_paths[index])
+                else:
+                    cond_inputs['image'] = self._load_grid_patch(self.inputs[index], y, x)
             if len(self.condition_types) == 0:
                 return label_tensor
             return label_tensor, cond_inputs

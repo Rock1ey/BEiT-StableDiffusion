@@ -265,9 +265,14 @@ def infer(args):
     if os.path.exists(os.path.join(train_config['task_name'],
                                    train_config['ldm_ckpt_name'])):
         print('Loaded unet checkpoint')
-        model.load_state_dict(torch.load(os.path.join(train_config['task_name'],
+        ckpt = torch.load(os.path.join(train_config['task_name'],
                                                       train_config['ldm_ckpt_name']),
-                                         map_location=device, weights_only=True))
+                                         map_location=device, weights_only=False)
+        if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+            model.load_state_dict(ckpt['model_state_dict'])
+            print('  Trained for {} epochs, loss={:.4f}'.format(ckpt['epoch'], ckpt.get('loss', -1)))
+        else:
+            model.load_state_dict(ckpt)
     else:
         raise Exception('Model checkpoint {} not found'.format(os.path.join(train_config['task_name'],
                                                                             train_config['ldm_ckpt_name'])))
