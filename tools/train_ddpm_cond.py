@@ -1,6 +1,8 @@
 import yaml
 import argparse
 import numpy as np
+import csv
+import time
 from tqdm import tqdm
 from torch.optim import Adam
 from dataset.mnist_dataset import MnistDataset
@@ -139,8 +141,19 @@ def train(args):
         for param in vae.parameters():
             param.requires_grad = False
     
+    # Setup CSV log (append mode for resume compatibility)
+    log_path = os.path.join(train_config['task_name'], 'train_log.csv')
+    write_header = not os.path.exists(log_path) or start_epoch == 0
+    log_file = open(log_path, 'a', newline='')
+    log_writer = csv.writer(log_file)
+    if write_header:
+        log_writer.writerow(['epoch', 'loss', 'lr', 'time_sec'])
+        log_file.flush()
+
     # Run training
+    current_lr = train_config['ldm_lr']
     for epoch_idx in range(start_epoch, num_epochs):
+        epoch_start = time.time()
         losses = []
         for data in tqdm(data_loader):
             cond_input = None
@@ -210,17 +223,25 @@ def train(args):
             losses.append(loss.item())
             loss.backward()
             optimizer.step()
-        print('Finished epoch:{} | Loss : {:.4f}'.format(
-            epoch_idx + 1,
-            np.mean(losses)))
+        epoch_loss = np.mean(losses)
+        epoch_time = time.time() - epoch_start
+        print('Finished epoch:{} | Loss : {:.4f} | Time: {:.0f}s'.format(
+            epoch_idx + 1, epoch_loss, epoch_time))
+
+        # Write CSV log
+        log_writer.writerow([epoch_idx + 1, '{:.6f}'.format(epoch_loss),
+                             current_lr, '{:.1f}'.format(epoch_time)])
+        log_file.flush()
+
         torch.save({
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'epoch': epoch_idx + 1,
-            'loss': np.mean(losses),
+            'loss': epoch_loss,
         }, os.path.join(train_config['task_name'],
                                                     train_config['ldm_ckpt_name']))
     
+    log_file.close()
     print('Done Training ...')
 
 

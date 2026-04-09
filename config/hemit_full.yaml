@@ -55,11 +55,11 @@ train_params:
   commitment_beta: 0.2
   perceptual_weight: 1
   kl_weight: 0.000005
-  ldm_epochs: 100
+  ldm_epochs: 150
   autoencoder_epochs: 20          # 48K patches × 20 epochs = ~240K steps, plenty
   num_samples: 8
   num_grid_rows: 4
-  ldm_lr: 0.000005
+  ldm_lr: 0.00001
   autoencoder_lr: 0.00005
   autoencoder_acc_steps: 4
   autoencoder_img_save_steps: 64
@@ -73,4 +73,4 @@ train_params:
   vae_autoencoder_ckpt_name: 'vae_autoencoder_ckpt.pth'
   vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
   vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
-  resume_from_epoch: 50
+  resume_from_epoch: 100
