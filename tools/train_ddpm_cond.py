@@ -118,6 +118,17 @@ def train(args):
     optimizer = Adam(model.parameters(), lr=train_config['ldm_lr'])
     criterion = torch.nn.MSELoss()
     
+    # Learning rate scheduler (optional, enabled by lr_scheduler config)
+    lr_scheduler_type = get_config_value(train_config, 'lr_scheduler', 'none')
+    lr_scheduler = None
+    if lr_scheduler_type == 'cosine':
+        lr_min = get_config_value(train_config, 'ldm_lr_min', 1e-6)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=num_epochs, eta_min=lr_min)
+    elif lr_scheduler_type == 'plateau':
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6)
+
     # Resume from checkpoint if requested
     start_epoch = 0
     ckpt_path = os.path.join(train_config['task_name'], train_config['ldm_ckpt_name'])
@@ -128,11 +139,23 @@ def train(args):
             model.load_state_dict(ckpt['model_state_dict'])
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt['epoch']
+            if lr_scheduler is not None and 'lr_scheduler_state_dict' in ckpt:
+                lr_scheduler.load_state_dict(ckpt['lr_scheduler_state_dict'])
+            elif lr_scheduler is not None:
+                # Fast-forward scheduler to current epoch
+                for _ in range(start_epoch):
+                    if lr_scheduler_type == 'cosine':
+                        lr_scheduler.step()
+                    # plateau requires loss, skip fast-forward
             print('Resumed from epoch {}'.format(start_epoch))
         else:
             # Legacy checkpoint (plain state_dict)
             model.load_state_dict(ckpt)
             start_epoch = get_config_value(train_config, 'resume_from_epoch', 0)
+            if lr_scheduler is not None:
+                for _ in range(start_epoch):
+                    if lr_scheduler_type == 'cosine':
+                        lr_scheduler.step()
             print('Loaded legacy checkpoint, resuming from epoch {}'.format(start_epoch))
     
     # Load vae and freeze parameters ONLY if latents already not saved
@@ -151,8 +174,8 @@ def train(args):
         log_file.flush()
 
     # Run training
-    current_lr = train_config['ldm_lr']
     for epoch_idx in range(start_epoch, num_epochs):
+        current_lr = optimizer.param_groups[0]['lr']
         epoch_start = time.time()
         losses = []
         for data in tqdm(data_loader):
@@ -225,20 +248,31 @@ def train(args):
             optimizer.step()
         epoch_loss = np.mean(losses)
         epoch_time = time.time() - epoch_start
-        print('Finished epoch:{} | Loss : {:.4f} | Time: {:.0f}s'.format(
-            epoch_idx + 1, epoch_loss, epoch_time))
+
+        # Step learning rate scheduler
+        if lr_scheduler is not None:
+            if lr_scheduler_type == 'plateau':
+                lr_scheduler.step(epoch_loss)
+            else:
+                lr_scheduler.step()
+
+        print('Finished epoch:{} | Loss : {:.4f} | LR: {:.2e} | Time: {:.0f}s'.format(
+            epoch_idx + 1, epoch_loss, current_lr, epoch_time))
 
         # Write CSV log
         log_writer.writerow([epoch_idx + 1, '{:.6f}'.format(epoch_loss),
                              current_lr, '{:.1f}'.format(epoch_time)])
         log_file.flush()
 
-        torch.save({
+        ckpt_dict = {
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'epoch': epoch_idx + 1,
             'loss': epoch_loss,
-        }, os.path.join(train_config['task_name'],
+        }
+        if lr_scheduler is not None:
+            ckpt_dict['lr_scheduler_state_dict'] = lr_scheduler.state_dict()
+        torch.save(ckpt_dict, os.path.join(train_config['task_name'],
                                                     train_config['ldm_ckpt_name']))
     
     log_file.close()

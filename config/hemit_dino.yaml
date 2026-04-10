@@ -58,16 +58,17 @@ train_params:
   commitment_beta: 0.2
   perceptual_weight: 1
   kl_weight: 0.000005
-  ldm_epochs: 100
-  autoencoder_epochs: 100
+  ldm_epochs: 200
+  autoencoder_epochs: 20
   num_samples: 8
   num_grid_rows: 4
-  ldm_lr: 0.000005
+  ldm_lr: 0.00002 # Slightly higher to help with DINOv2 conditioning
   autoencoder_lr: 0.00005
   autoencoder_acc_steps: 4
   autoencoder_img_save_steps: 64
-  save_latents: False
+  save_latents: True                   # Reuse VQVAE latents from hemit_full
   cf_guidance_scale: 2.0             # Enable classifier-free guidance at inference
+  num_workers: 4
   vae_latent_dir_name: 'vae_latents'
   vqvae_latent_dir_name: 'vqvae_latents'
   ldm_ckpt_name: 'ddpm_ckpt_hemit_dino.pth'
@@ -75,3 +76,5 @@ train_params:
   vae_autoencoder_ckpt_name: 'vae_autoencoder_ckpt.pth'
   vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
   vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
+  lr_scheduler: 'cosine'
+  ldm_lr_min: 0.000001
