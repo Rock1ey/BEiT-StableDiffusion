@@ -207,6 +207,8 @@ def train(args):
                 assert 'image' in cond_input, 'Conditioning Type Image but no image conditioning input present'
                 validate_image_config(condition_config)
                 cond_input_image = cond_input['image'].to(device)
+                # Save original image for DINOv2 before dropping
+                cond_input_image_orig = cond_input_image
                 # Drop condition
                 im_drop_prob = get_config_value(condition_config['image_condition_config'],
                                                       'cond_drop_prob', 0.)
@@ -215,7 +217,8 @@ def train(args):
                 with torch.no_grad():
                     assert 'image' in cond_input, 'DINOv2 conditioning requires image condition input'
                     from utils.dino_utils import get_dino_representation
-                    dino_input = cond_input['image'].to(device)
+                    # Use ORIGINAL condition image (before drop) for DINOv2 feature extraction
+                    dino_input = cond_input_image_orig if 'image' in condition_types else cond_input['image'].to(device)
                     dino_features = get_dino_representation(dino_input, dino_model, device)
                     dino_drop_prob = get_config_value(condition_config['dino_condition_config'],
                                                       'cond_drop_prob', 0.)
