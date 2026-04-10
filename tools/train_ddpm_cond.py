@@ -18,6 +18,10 @@ from utils.diffusion_utils import *
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Enable TF32 for free speedup on Ampere+ GPUs (RTX 30xx/40xx)
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 
 def train(args):
     # Read the config file #
@@ -117,6 +121,12 @@ def train(args):
     num_epochs = train_config['ldm_epochs']
     optimizer = Adam(model.parameters(), lr=train_config['ldm_lr'])
     criterion = torch.nn.MSELoss()
+
+    # Mixed precision (BF16 on Ampere+, no GradScaler needed)
+    use_amp = get_config_value(train_config, 'use_amp', False)
+    amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else None
+    if use_amp:
+        print('AMP enabled with dtype: {}'.format(amp_dtype))
     
     # Learning rate scheduler (optional, enabled by lr_scheduler config)
     lr_scheduler_type = get_config_value(train_config, 'lr_scheduler', 'none')
@@ -244,8 +254,9 @@ def train(args):
             
             # Add noise to images according to timestep
             noisy_im = scheduler.add_noise(im, noise, t)
-            noise_pred = model(noisy_im, t, cond_input=cond_input)
-            loss = criterion(noise_pred, noise)
+            with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+                noise_pred = model(noisy_im, t, cond_input=cond_input)
+                loss = criterion(noise_pred, noise)
             losses.append(loss.item())
             loss.backward()
             optimizer.step()

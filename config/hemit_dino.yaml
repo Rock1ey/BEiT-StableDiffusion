@@ -50,7 +50,7 @@ autoencoder_params:
 train_params:
   seed: 1111
   task_name: 'hemit_dino'
-  ldm_batch_size: 6                  # Slightly smaller due to DINOv2 memory
+  ldm_batch_size: 24                 # AMP BF16 allows larger batch
   autoencoder_batch_size: 4
   disc_start: 5000
   disc_weight: 0.5
@@ -68,7 +68,7 @@ train_params:
   autoencoder_img_save_steps: 64
   save_latents: True                   # Reuse VQVAE latents from hemit_full
   cf_guidance_scale: 2.0             # Enable classifier-free guidance at inference
-  num_workers: 4
+  num_workers: 8
   vae_latent_dir_name: 'vae_latents'
   vqvae_latent_dir_name: 'vqvae_latents'
   ldm_ckpt_name: 'ddpm_ckpt_hemit_dino.pth'
@@ -78,3 +78,4 @@ train_params:
   vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
   lr_scheduler: 'cosine'
   ldm_lr_min: 0.000001
+  use_amp: True                        # BF16 mixed precision on RTX 4090
