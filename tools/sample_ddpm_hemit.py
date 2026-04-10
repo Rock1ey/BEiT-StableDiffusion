@@ -11,6 +11,7 @@ from tqdm import tqdm
 from models.unet_cond_base import Unet
 from models.vqvae import VQVAE
 from scheduler.linear_noise_scheduler import LinearNoiseScheduler
+from scheduler.ddim_scheduler import DDIMScheduler
 from utils.config_utils import *
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -31,6 +32,7 @@ def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
                          im_size, dino_model=None):
     """
     Run the full reverse diffusion process for a single patch.
+    Supports both DDPM (LinearNoiseScheduler) and DDIM (DDIMScheduler).
     Returns decoded image tensor [1, 3, patch_size, patch_size] in [0, 1].
     """
     latent_size = im_size // 2 ** sum(autoencoder_model_config['down_sample'])
@@ -38,18 +40,34 @@ def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
     xt = torch.randn((1, autoencoder_model_config['z_channels'],
                        latent_size, latent_size)).to(device)
 
-    for i in tqdm(reversed(range(diffusion_config['num_timesteps'])),
-                  total=diffusion_config['num_timesteps'], leave=False):
-        t = (torch.ones((xt.shape[0],)) * i).long().to(device)
-        noise_pred_cond = model(xt, t, cond_input)
+    is_ddim = isinstance(scheduler, DDIMScheduler)
 
-        if cf_guidance_scale > 1:
-            noise_pred_uncond = model(xt, t, uncond_input)
-            noise_pred = noise_pred_uncond + cf_guidance_scale * (noise_pred_cond - noise_pred_uncond)
-        else:
-            noise_pred = noise_pred_cond
+    if is_ddim:
+        timesteps = scheduler.timesteps
+        for t_idx in tqdm(range(len(timesteps)), leave=False):
+            t = timesteps[t_idx].unsqueeze(0).to(device)
+            noise_pred_cond = model(xt, t, cond_input)
 
-        xt, x0_pred = scheduler.sample_prev_timestep(xt, noise_pred, torch.as_tensor(i).to(device))
+            if cf_guidance_scale > 1:
+                noise_pred_uncond = model(xt, t, uncond_input)
+                noise_pred = noise_pred_uncond + cf_guidance_scale * (noise_pred_cond - noise_pred_uncond)
+            else:
+                noise_pred = noise_pred_cond
+
+            xt, x0_pred = scheduler.sample_prev_timestep(xt, noise_pred, t_idx)
+    else:
+        for i in tqdm(reversed(range(diffusion_config['num_timesteps'])),
+                      total=diffusion_config['num_timesteps'], leave=False):
+            t = (torch.ones((xt.shape[0],)) * i).long().to(device)
+            noise_pred_cond = model(xt, t, cond_input)
+
+            if cf_guidance_scale > 1:
+                noise_pred_uncond = model(xt, t, uncond_input)
+                noise_pred = noise_pred_uncond + cf_guidance_scale * (noise_pred_cond - noise_pred_uncond)
+            else:
+                noise_pred = noise_pred_cond
+
+            xt, x0_pred = scheduler.sample_prev_timestep(xt, noise_pred, torch.as_tensor(i).to(device))
 
     # Decode final latent
     decoded = vae.decode(xt)
@@ -244,6 +262,19 @@ def infer(args):
                                      beta_start=diffusion_config['beta_start'],
                                      beta_end=diffusion_config['beta_end'])
 
+    # Use DDIM scheduler if requested
+    num_inference_steps = args.ddim_steps
+    if num_inference_steps is not None and num_inference_steps < diffusion_config['num_timesteps']:
+        scheduler = DDIMScheduler(
+            num_train_timesteps=diffusion_config['num_timesteps'],
+            beta_start=diffusion_config['beta_start'],
+            beta_end=diffusion_config['beta_end'],
+            num_inference_steps=num_inference_steps,
+            eta=args.ddim_eta)
+        print('Using DDIM scheduler: {} steps (eta={})'.format(num_inference_steps, args.ddim_eta))
+    else:
+        print('Using DDPM scheduler: {} steps'.format(diffusion_config['num_timesteps']))
+
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
     assert condition_config is not None, "No conditioning config found"
     condition_types = get_config_value(condition_config, 'condition_types', [])
@@ -317,5 +348,9 @@ if __name__ == '__main__':
                         help='Enable full-resolution patch-based inference with stitching')
     parser.add_argument('--stride', type=int, default=192,
                         help='Stride for sliding window in full-image mode (default: 192, overlap=64)')
+    parser.add_argument('--ddim-steps', type=int, default=50,
+                        help='Number of DDIM sampling steps (default: 50, set to 1000 for full DDPM)')
+    parser.add_argument('--ddim-eta', type=float, default=0.0,
+                        help='DDIM eta parameter (0=deterministic, 1=DDPM equivalent)')
     args = parser.parse_args()
     infer(args)
