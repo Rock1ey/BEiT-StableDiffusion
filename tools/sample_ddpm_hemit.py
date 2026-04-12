@@ -443,10 +443,10 @@ if __name__ == '__main__':
                         default='config/hemit.yaml', type=str)
     parser.add_argument('--full-image', action='store_true',
                         help='Enable full-resolution patch-based inference with stitching')
-    parser.add_argument('--stride', type=int, default=192,
-                        help='Stride for sliding window in full-image mode (default: 192, overlap=64)')
-    parser.add_argument('--ddim-steps', type=int, default=50,
-                        help='Number of DDIM sampling steps (default: 50, set to 1000 for full DDPM)')
+    parser.add_argument('--stride', type=int, default=256,
+                        help='Stride for sliding window in full-image mode (default: 256 = no overlap)')
+    parser.add_argument('--ddim-steps', type=int, default=1000,
+                        help='Number of DDIM sampling steps (set <1000 to enable DDIM, 1000 = full DDPM)')
     parser.add_argument('--ddim-eta', type=float, default=0.0,
                         help='DDIM eta parameter (0=deterministic, 1=DDPM equivalent)')
     parser.add_argument('--patches-per-gpu', type=int, default=8,
