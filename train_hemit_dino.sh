@@ -17,30 +17,28 @@ echo "  GPUs:   ${NGPU}"
 echo "  Start:  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=============================================="
 
-# Create task directory & symlink shared VQVAE assets from hemit_full
-mkdir -p "${TASK_DIR}"
-
-# Symlink VQVAE checkpoint if not already present
+# Verify required VQVAE assets exist
 if [ ! -f "${TASK_DIR}/vqvae_autoencoder_ckpt.pth" ]; then
-    if [ -f "hemit_full/vqvae_autoencoder_ckpt.pth" ]; then
-        ln -sf "$(pwd)/hemit_full/vqvae_autoencoder_ckpt.pth" "${TASK_DIR}/vqvae_autoencoder_ckpt.pth"
-        echo "Symlinked VQVAE checkpoint from hemit_full"
-    else
-        echo "ERROR: hemit_full/vqvae_autoencoder_ckpt.pth not found!"
-        exit 1
-    fi
+    echo "ERROR: ${TASK_DIR}/vqvae_autoencoder_ckpt.pth not found!"
+    exit 1
 fi
-
-# Symlink latents directory if not already present
 if [ ! -d "${LATENT_DIR}" ] || [ -z "$(ls -A ${LATENT_DIR} 2>/dev/null)" ]; then
-    if [ -d "hemit_full/vqvae_latents" ] && [ -n "$(ls -A hemit_full/vqvae_latents 2>/dev/null)" ]; then
-        rm -rf "${LATENT_DIR}"
-        ln -sf "$(pwd)/hemit_full/vqvae_latents" "${LATENT_DIR}"
-        echo "Symlinked VQVAE latents from hemit_full"
-    else
-        echo "ERROR: hemit_full/vqvae_latents not found or empty!"
-        exit 1
-    fi
+    echo "ERROR: ${LATENT_DIR} not found or empty!"
+    exit 1
+fi
+echo "VQVAE checkpoint: OK"
+echo "VQVAE latents:    OK"
+
+# Clean stale LDM artifacts from previous runs
+LDM_CKPT="${TASK_DIR}/ddpm_ckpt_hemit_dino.pth"
+TRAIN_LOG="${TASK_DIR}/train_log.csv"
+if [ -f "${LDM_CKPT}" ]; then
+    echo "Removing old LDM checkpoint: ${LDM_CKPT}"
+    rm -f "${LDM_CKPT}"
+fi
+if [ -f "${TRAIN_LOG}" ]; then
+    echo "Removing old train log: ${TRAIN_LOG}"
+    rm -f "${TRAIN_LOG}"
 fi
 
 # -----------------------------------------------
