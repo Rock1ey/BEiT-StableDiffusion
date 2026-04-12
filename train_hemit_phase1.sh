@@ -74,10 +74,10 @@ echo "  3. Full-resolution stitched inference:"
 echo "     python -m tools.sample_ddpm_hemit --config ${CONFIG} --full-image --stride 192"
 
 # 1. 全图推理（滑动窗口拼接）
-python -m tools.sample_ddpm_hemit --config config/hemit_full.yaml --full-image --stride 192
-
+python -m tools.sample_ddpm_hemit --config config/hemit_dino.yaml --full-image --stride 192
+    
 # 2. 评估
-python -m tools.evaluate_hemit --config config/hemit_full.yaml
+python -m tools.evaluate_hemit --config config/hemit_dino.yaml
 
 # 3. 训练 LDM（DINOv2 + image dual conditioning）
 python -m tools.train_ddpm_cond --config config/hemit_dino.yaml

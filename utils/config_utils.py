@@ -13,11 +13,11 @@ def validate_text_config(condition_config):
         "text_embed_dim missing in text condition config"
 
 
-def validate_dino_config(condition_config):
-    assert 'dino_condition_config' in condition_config, \
-        "DINOv2 conditioning desired but dino condition config missing"
-    assert 'dino_embed_dim' in condition_config['dino_condition_config'], \
-        "dino_embed_dim missing in dino condition config"
+def validate_encoder_config(condition_config):
+    assert 'encoder_condition_config' in condition_config, \
+        "Encoder conditioning desired but encoder condition config missing"
+    assert 'encoder_embed_dim' in condition_config['encoder_condition_config'], \
+        "encoder_embed_dim missing in encoder condition config"
     
 
 def validate_image_config(condition_config):

@@ -46,11 +46,11 @@ def drop_class_condition(class_condition, class_drop_prob, im):
         return class_condition
 
 
-def drop_dino_condition(dino_embed, im, dino_drop_prob):
-    """Drop DINOv2 features for classifier-free guidance training."""
-    if dino_drop_prob > 0:
-        dino_drop_mask = torch.zeros((im.shape[0], 1, 1), device=im.device).float().uniform_(0,
-                                                                                              1) > dino_drop_prob
-        return dino_embed * dino_drop_mask
+def drop_encoder_condition(encoder_embed, im, drop_prob):
+    """Drop encoder features for classifier-free guidance training."""
+    if drop_prob > 0:
+        drop_mask = torch.zeros((im.shape[0], 1, 1), device=im.device).float().uniform_(0,
+                                                                                              1) > drop_prob
+        return encoder_embed * drop_mask
     else:
-        return dino_embed
+        return encoder_embed

@@ -31,8 +31,8 @@ ldm_params:
       image_condition_w: 256
       cond_drop_prob: 0.1
     encoder_condition_config:
-      encoder_embed_dim: 768              # DINOv2 ViT-B/14 output dim
-      encoder_model_name: 'dinov2'        # Use DINOv2 as feature encoder
+      encoder_embed_dim: 768              # Phikon ViT-B output dim (same as DINOv2)
+      encoder_model_name: 'phikon'        # Use Phikon as feature encoder
       cond_drop_prob: 0.1              # CFG dropout for encoder features
 
 autoencoder_params:
@@ -50,7 +50,7 @@ autoencoder_params:
 
 train_params:
   seed: 1111
-  task_name: 'hemit_dino'
+  task_name: 'hemit_phikon'
   ldm_batch_size: 24                 # AMP BF16 allows larger batch
   autoencoder_batch_size: 4
   disc_start: 5000
@@ -63,20 +63,20 @@ train_params:
   autoencoder_epochs: 20
   num_samples: 8
   num_grid_rows: 4
-  ldm_lr: 0.00002 # Slightly higher to help with DINOv2 conditioning
+  ldm_lr: 0.00002
   autoencoder_lr: 0.00005
   autoencoder_acc_steps: 4
   autoencoder_img_save_steps: 64
-  save_latents: True                   # Reuse VQVAE latents from hemit_full
-  cf_guidance_scale: 2.0             # Enable classifier-free guidance at inference
+  save_latents: True
+  cf_guidance_scale: 2.0
   num_workers: 8
   vae_latent_dir_name: 'vae_latents'
   vqvae_latent_dir_name: 'vqvae_latents'
-  ldm_ckpt_name: 'ddpm_ckpt_hemit_dino.pth'
+  ldm_ckpt_name: 'ddpm_ckpt_hemit_phikon.pth'
   vqvae_autoencoder_ckpt_name: 'vqvae_autoencoder_ckpt.pth'
   vae_autoencoder_ckpt_name: 'vae_autoencoder_ckpt.pth'
   vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
   vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
   lr_scheduler: 'cosine'
   ldm_lr_min: 0.000001
-  use_amp: True                        # BF16 mixed precision on RTX 4090
+  use_amp: True

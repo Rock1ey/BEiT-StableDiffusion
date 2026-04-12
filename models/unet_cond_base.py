@@ -36,9 +36,9 @@ class Unet(nn.Module):
         self.class_cond = False
         self.text_cond = False
         self.image_cond = False
-        self.dino_cond = False
+        self.encoder_cond = False
         self.text_embed_dim = None
-        self.dino_embed_dim = None
+        self.encoder_embed_dim = None
         self.condition_config = get_config_value(model_config, 'condition_config', None)
         if self.condition_config is not None:
             assert 'condition_types' in self.condition_config, 'Condition Type not provided in model config'
@@ -57,17 +57,17 @@ class Unet(nn.Module):
                     'image_condition_input_channels']
                 self.im_cond_output_ch = self.condition_config['image_condition_config'][
                     'image_condition_output_channels']
-            if 'dino' in condition_types:
-                validate_dino_config(self.condition_config)
-                self.dino_cond = True
-                self.dino_embed_dim = self.condition_config['dino_condition_config']['dino_embed_dim']
+            if 'encoder' in condition_types:
+                validate_encoder_config(self.condition_config)
+                self.encoder_cond = True
+                self.encoder_embed_dim = self.condition_config['encoder_condition_config']['encoder_embed_dim']
 
-        # Determine cross-attention context dimension (text or dino, not both)
-        self.use_cross_attn = self.text_cond or self.dino_cond
+        # Determine cross-attention context dimension (text or encoder, not both)
+        self.use_cross_attn = self.text_cond or self.encoder_cond
         if self.text_cond:
             self.context_dim = self.text_embed_dim
-        elif self.dino_cond:
-            self.context_dim = self.dino_embed_dim
+        elif self.encoder_cond:
+            self.context_dim = self.encoder_embed_dim
         else:
             self.context_dim = None
         if self.class_cond:
@@ -87,7 +87,7 @@ class Unet(nn.Module):
                                             self.down_channels[0], kernel_size=3, padding=1)
         else:
             self.conv_in = nn.Conv2d(im_channels, self.down_channels[0], kernel_size=3, padding=1)
-        self.cond = self.text_cond or self.image_cond or self.class_cond or self.dino_cond
+        self.cond = self.text_cond or self.image_cond or self.class_cond or self.encoder_cond
         ###################################
         
         # Initial projection from sinusoidal time embedding
@@ -175,10 +175,10 @@ class Unet(nn.Module):
             assert 'text' in cond_input, \
                 "Model initialized with text conditioning but cond_input has no text information"
             context_hidden_states = cond_input['text']
-        if self.dino_cond:
-            assert 'dino' in cond_input, \
-                "Model initialized with DINOv2 conditioning but cond_input has no dino information"
-            context_hidden_states = cond_input['dino']
+        if self.encoder_cond:
+            assert 'encoder' in cond_input, \
+                "Model initialized with encoder conditioning but cond_input has no encoder information"
+            context_hidden_states = cond_input['encoder']
         down_outs = []
         
         for idx, down in enumerate(self.downs):

@@ -49,7 +49,8 @@ def train(args):
     text_tokenizer = None
     text_model = None
     empty_text_embed = None
-    dino_model = None
+    encoder_model = None
+    encoder_extract_fn = None
     condition_types = []
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
     if condition_config is not None:
@@ -64,11 +65,13 @@ def train(args):
                 text_tokenizer, text_model = get_tokenizer_and_model(condition_config['text_condition_config']
                                                                      ['text_embed_model'], device=device)
                 empty_text_embed = get_text_representation([''], text_tokenizer, text_model, device)
-        if 'dino' in condition_types:
-            validate_dino_config(condition_config)
-            from utils.dino_utils import get_dino_model, get_dino_representation
-            dino_model = get_dino_model(device)
-            print('Loaded DINOv2 model for cross-attention conditioning')
+        if 'encoder' in condition_types:
+            validate_encoder_config(condition_config)
+            from utils.encoder_utils import get_feature_extractor
+            encoder_model_name = get_config_value(
+                condition_config['encoder_condition_config'], 'encoder_model_name', 'dinov2')
+            encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
+            print(f'Loaded {encoder_model_name} model for cross-attention conditioning')
 
     use_patches = get_config_value(dataset_config, 'patch_mode', 'none')
             
@@ -217,23 +220,22 @@ def train(args):
                 assert 'image' in cond_input, 'Conditioning Type Image but no image conditioning input present'
                 validate_image_config(condition_config)
                 cond_input_image = cond_input['image'].to(device)
-                # Save original image for DINOv2 before dropping
+                # Save original image before dropping for encoder feature extraction
                 cond_input_image_orig = cond_input_image
                 # Drop condition
                 im_drop_prob = get_config_value(condition_config['image_condition_config'],
                                                       'cond_drop_prob', 0.)
                 cond_input['image'] = drop_image_condition(cond_input_image, im, im_drop_prob)
-            if 'dino' in condition_types:
+            if 'encoder' in condition_types:
                 with torch.no_grad():
-                    assert 'image' in cond_input, 'DINOv2 conditioning requires image condition input'
-                    from utils.dino_utils import get_dino_representation
-                    # Use ORIGINAL condition image (before drop) for DINOv2 feature extraction
-                    dino_input = cond_input_image_orig if 'image' in condition_types else cond_input['image'].to(device)
-                    dino_features = get_dino_representation(dino_input, dino_model, device)
-                    dino_drop_prob = get_config_value(condition_config['dino_condition_config'],
+                    assert 'image' in cond_input, 'Encoder conditioning requires image condition input'
+                    # Use ORIGINAL condition image (before drop) for feature extraction
+                    encoder_input = cond_input_image_orig if 'image' in condition_types else cond_input['image'].to(device)
+                    encoder_features = encoder_extract_fn(encoder_input, encoder_model, device)
+                    encoder_drop_prob = get_config_value(condition_config['encoder_condition_config'],
                                                       'cond_drop_prob', 0.)
-                    dino_features = drop_dino_condition(dino_features, im, dino_drop_prob)
-                    cond_input['dino'] = dino_features
+                    encoder_features = drop_encoder_condition(encoder_features, im, encoder_drop_prob)
+                    cond_input['encoder'] = encoder_features
             if 'class' in condition_types:
                 assert 'class' in cond_input, 'Conditioning Type Class but no class conditioning input present'
                 validate_class_config(condition_config)

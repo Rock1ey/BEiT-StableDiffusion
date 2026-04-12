@@ -29,7 +29,7 @@ def _make_gaussian_weight(patch_size, device):
 
 def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
                          diffusion_config, autoencoder_model_config, cf_guidance_scale,
-                         im_size, dino_model=None):
+                         im_size):
     """
     Run the full reverse diffusion process for a single patch.
     Supports both DDPM (LinearNoiseScheduler) and DDIM (DDIMScheduler).
@@ -76,7 +76,7 @@ def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
     return decoded
 
 
-def _prepare_cond_input(cond_patch, condition_types, dino_model=None):
+def _prepare_cond_input(cond_patch, condition_types, encoder_model=None, encoder_extract_fn=None):
     """Build cond_input and uncond_input dicts from a condition patch."""
     cond_input = {}
     uncond_input = {}
@@ -85,19 +85,18 @@ def _prepare_cond_input(cond_patch, condition_types, dino_model=None):
         cond_input['image'] = cond_patch  # [1, 3, H, W] in [-1, 1]
         uncond_input['image'] = torch.zeros_like(cond_patch)
 
-    if 'dino' in condition_types:
-        from utils.dino_utils import get_dino_representation
+    if 'encoder' in condition_types:
         with torch.no_grad():
-            dino_features = get_dino_representation(cond_patch, dino_model, device)
-        cond_input['dino'] = dino_features
-        uncond_input['dino'] = torch.zeros_like(dino_features)
+            encoder_features = encoder_extract_fn(cond_patch, encoder_model, device)
+        cond_input['encoder'] = encoder_features
+        uncond_input['encoder'] = torch.zeros_like(encoder_features)
 
     return cond_input, uncond_input
 
 
 def sample_single_image(model, scheduler, train_config, diffusion_model_config,
                         autoencoder_model_config, diffusion_config, dataset_config, vae,
-                        condition_types, dino_model=None):
+                        condition_types, encoder_model=None, encoder_extract_fn=None):
     """
     Sample individual patches from test images (original behavior, for patch-trained models).
     """
@@ -121,12 +120,12 @@ def sample_single_image(model, scheduler, train_config, diffusion_model_config,
         cond_image = cond_data['image'].unsqueeze(0).to(device)
 
         cond_input, uncond_input = _prepare_cond_input(
-            cond_image, condition_types, dino_model)
+            cond_image, condition_types, encoder_model, encoder_extract_fn)
 
         decoded = _sample_single_patch(
             model, scheduler, vae, cond_input, uncond_input,
             diffusion_config, autoencoder_model_config, cf_guidance_scale,
-            im_size, dino_model)
+            im_size)
 
         # Save side-by-side: input | generated
         cond_vis = (cond_image.detach().cpu() + 1) / 2
@@ -141,7 +140,7 @@ def sample_single_image(model, scheduler, train_config, diffusion_model_config,
 
 def sample_full_image(model, scheduler, train_config, diffusion_model_config,
                       autoencoder_model_config, diffusion_config, dataset_config, vae,
-                      condition_types, dino_model=None,
+                      condition_types, encoder_model=None, encoder_extract_fn=None,
                       patch_size=256, stride=192):
     """
     Full-resolution inference via sliding-window patch sampling with Gaussian blending.
@@ -198,12 +197,12 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
                 cond_patch = cond_patch.unsqueeze(0).to(device)  # [1, 3, ps, ps]
 
                 cond_input, uncond_input = _prepare_cond_input(
-                    cond_patch, condition_types, dino_model)
+                    cond_patch, condition_types, encoder_model, encoder_extract_fn)
 
                 decoded = _sample_single_patch(
                     model, scheduler, vae, cond_input, uncond_input,
                     diffusion_config, autoencoder_model_config, cf_guidance_scale,
-                    patch_size, dino_model)  # [1, 3, ps, ps] in [0, 1]
+                    patch_size)  # [1, 3, ps, ps] in [0, 1]
 
                 # Accumulate with Gaussian weighting
                 output_sum[:, yi:yi + patch_size, xi:xi + patch_size] += \
@@ -281,13 +280,16 @@ def infer(args):
     assert 'image' in condition_types, "No image condition found in config"
     validate_image_config(condition_config)
 
-    # Load DINOv2 if needed
-    dino_model = None
-    if 'dino' in condition_types:
-        validate_dino_config(condition_config)
-        from utils.dino_utils import get_dino_model
-        dino_model = get_dino_model(device)
-        print('Loaded DINOv2 model for inference')
+    # Load feature extractor if needed
+    encoder_model = None
+    encoder_extract_fn = None
+    if 'encoder' in condition_types:
+        validate_encoder_config(condition_config)
+        from utils.encoder_utils import get_feature_extractor
+        encoder_model_name = get_config_value(
+            condition_config['encoder_condition_config'], 'encoder_model_name', 'dinov2')
+        encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
+        print(f'Loaded {encoder_model_name} model for inference')
 
     ########## Load Unet #############
     model = Unet(im_channels=autoencoder_model_config['z_channels'],
@@ -330,14 +332,14 @@ def infer(args):
             # Patch-based full-resolution inference
             sample_full_image(model, scheduler, train_config, diffusion_model_config,
                               autoencoder_model_config, diffusion_config, dataset_config, vae,
-                              condition_types, dino_model,
+                              condition_types, encoder_model, encoder_extract_fn,
                               patch_size=dataset_config['im_size'],
                               stride=args.stride)
         else:
             # Single-patch sampling
             sample_single_image(model, scheduler, train_config, diffusion_model_config,
                                 autoencoder_model_config, diffusion_config, dataset_config, vae,
-                                condition_types, dino_model)
+                                condition_types, encoder_model, encoder_extract_fn)
 
 
 if __name__ == '__main__':
