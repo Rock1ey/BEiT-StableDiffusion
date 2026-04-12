@@ -29,25 +29,33 @@ def _make_gaussian_weight(patch_size, device):
     return kernel
 
 
-def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
-                         diffusion_config, autoencoder_model_config, cf_guidance_scale,
-                         im_size, target_device=None):
+def _sample_patches(model, scheduler, vae, cond_input, uncond_input,
+                    diffusion_config, autoencoder_model_config, cf_guidance_scale,
+                    im_size, target_device=None):
     """
-    Run the full reverse diffusion process for a single patch on a specific device.
-    Returns decoded image tensor [1, 3, patch_size, patch_size] in [0, 1].
+    Run the full reverse diffusion for a BATCH of patches on a specific device.
+    cond_input/uncond_input: dicts with tensors of shape [B, ...].
+    Returns decoded image tensor [B, 3, patch_size, patch_size] in [0, 1].
     """
     dev = target_device or device
     latent_size = im_size // 2 ** sum(autoencoder_model_config['down_sample'])
 
-    xt = torch.randn((1, autoencoder_model_config['z_channels'],
+    # Determine batch size from cond_input
+    batch_size = 1
+    for v in cond_input.values():
+        if isinstance(v, torch.Tensor):
+            batch_size = v.shape[0]
+            break
+
+    xt = torch.randn((batch_size, autoencoder_model_config['z_channels'],
                        latent_size, latent_size)).to(dev)
 
     is_ddim = isinstance(scheduler, DDIMScheduler)
 
     if is_ddim:
         timesteps = scheduler.timesteps
-        for t_idx in tqdm(range(len(timesteps)), leave=False):
-            t = timesteps[t_idx].unsqueeze(0).to(dev)
+        for t_idx in range(len(timesteps)):
+            t = timesteps[t_idx].expand(batch_size).to(dev)
             noise_pred_cond = model(xt, t, cond_input)
 
             if cf_guidance_scale > 1:
@@ -58,9 +66,8 @@ def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
 
             xt, x0_pred = scheduler.sample_prev_timestep(xt, noise_pred, t_idx)
     else:
-        for i in tqdm(reversed(range(diffusion_config['num_timesteps'])),
-                      total=diffusion_config['num_timesteps'], leave=False):
-            t = (torch.ones((xt.shape[0],)) * i).long().to(dev)
+        for i in range(diffusion_config['num_timesteps'] - 1, -1, -1):
+            t = torch.full((batch_size,), i, dtype=torch.long, device=dev)
             noise_pred_cond = model(xt, t, cond_input)
 
             if cf_guidance_scale > 1:
@@ -71,7 +78,7 @@ def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
 
             xt, x0_pred = scheduler.sample_prev_timestep(xt, noise_pred, torch.as_tensor(i).to(dev))
 
-    # Decode final latent
+    # Decode final latents
     decoded = vae.decode(xt)
     decoded = torch.clamp(decoded, -1., 1.)
     decoded = (decoded + 1) / 2
@@ -128,7 +135,7 @@ def sample_single_image(model, scheduler, train_config, diffusion_model_config,
         cond_input, uncond_input = _prepare_cond_input(
             cond_image, condition_types, encoder_model, encoder_extract_fn)
 
-        decoded = _sample_single_patch(
+        decoded = _sample_patches(
             model, scheduler, vae, cond_input, uncond_input,
             diffusion_config, autoencoder_model_config, cf_guidance_scale,
             im_size)
@@ -147,14 +154,13 @@ def sample_single_image(model, scheduler, train_config, diffusion_model_config,
 def sample_full_image(model, scheduler, train_config, diffusion_model_config,
                       autoencoder_model_config, diffusion_config, dataset_config, vae,
                       condition_types, encoder_model=None, encoder_extract_fn=None,
-                      patch_size=256, stride=192, infer_batch_size=1,
+                      patch_size=256, stride=192, patches_per_gpu=8,
                       gpu_models=None, gpu_vaes=None):
     """
     Full-resolution inference via sliding-window patch sampling with Gaussian blending.
 
-    Multi-GPU strategy: each GPU holds a full copy of UNet+VAE and processes
-    different patches independently (no communication). Patches are dispatched
-    to GPUs in round-robin fashion using threads.
+    Multi-GPU strategy: each GPU processes a BATCH of patches independently.
+    patches_per_gpu: number of patches each GPU processes simultaneously.
     """
     cf_guidance_scale = get_config_value(train_config, 'cf_guidance_scale', 1.0)
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
@@ -169,22 +175,25 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
     out_dir = os.path.join(train_config['task_name'], 'cond_hemit_full_samples')
     os.makedirs(out_dir, exist_ok=True)
 
-    gauss_weight = _make_gaussian_weight(patch_size, device)  # [H, W] on GPU:0
+    gauss_weight_cpu = _make_gaussian_weight(patch_size, torch.device('cpu'))
 
     # Determine available GPU devices and their model/vae pairs
     if gpu_models is not None and len(gpu_models) > 1:
         devices = list(gpu_models.keys())
-        n_workers = len(devices)
-        print(f'Multi-GPU inference: {n_workers} GPUs, patches dispatched independently')
+        n_gpus = len(devices)
     else:
-        # Single GPU fallback
         devices = [device]
         gpu_models = {device: model}
         gpu_vaes = {device: vae}
-        n_workers = 1
+        n_gpus = 1
+
+    total_parallel = n_gpus * patches_per_gpu
+    print(f'Inference: {n_gpus} GPUs x {patches_per_gpu} patches/GPU = {total_parallel} parallel patches')
+
+    num_samples = train_config['num_samples']
 
     for img_idx, input_path in enumerate(input_paths):
-        if img_idx >= train_config['num_samples']:
+        if img_idx >= num_samples:
             break
 
         # Load full-resolution input image
@@ -194,10 +203,8 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
         input_im.close()
 
         C = 3
-        # Output accumulation buffers (on CPU to avoid cross-GPU issues)
         output_sum = torch.zeros(C, orig_h, orig_w)
         weight_sum = torch.zeros(1, orig_h, orig_w)
-        gauss_weight_cpu = gauss_weight.cpu()
 
         # Compute patch positions
         y_positions = list(range(0, orig_h - patch_size + 1, stride))
@@ -209,69 +216,75 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
 
         all_positions = [(yi, xi) for yi in y_positions for xi in x_positions]
         total_patches = len(all_positions)
-        print(f'Image {img_idx}: {orig_h}x{orig_w}, {total_patches} patches '
-              f'(stride={stride}, overlap={patch_size - stride}, workers={n_workers})')
+        print(f'[{img_idx+1}/{num_samples}] {orig_h}x{orig_w}, {total_patches} patches, '
+              f'stride={stride}')
 
-        # Pre-extract encoder features for all patches on GPU:0 (encoder stays on GPU:0)
-        # This avoids running the encoder in threads which may cause issues
+        # Pre-extract ALL condition inputs on GPU:0 then store on CPU
         all_cond_inputs = []
         all_uncond_inputs = []
-        if 'encoder' in condition_types:
-            print('  Pre-extracting encoder features...')
         for (yi, xi) in all_positions:
             patch = input_tensor[:, yi:yi + patch_size, xi:xi + patch_size].unsqueeze(0)
-            cond_input, uncond_input = _prepare_cond_input(
+            ci, ui = _prepare_cond_input(
                 patch, condition_types, encoder_model, encoder_extract_fn,
-                target_device=torch.device('cpu'))  # store on CPU first
-            all_cond_inputs.append(cond_input)
-            all_uncond_inputs.append(uncond_input)
+                target_device=torch.device('cpu'))
+            all_cond_inputs.append(ci)
+            all_uncond_inputs.append(ui)
 
-        # Results storage
+        # Process in chunks of total_parallel, split across GPUs
         results = [None] * total_patches
-        lock = threading.Lock()
-        progress = [0]
 
-        def _process_patch(patch_idx, gpu_device):
-            """Process a single patch on the assigned GPU."""
+        def _process_batch_on_gpu(patch_indices, gpu_device):
+            """Process a batch of patches on one GPU."""
+            if not patch_indices:
+                return
             gpu_model = gpu_models[gpu_device]
             gpu_vae = gpu_vaes[gpu_device]
 
-            # Move cond_input to target GPU
-            ci = {k: v.to(gpu_device) for k, v in all_cond_inputs[patch_idx].items()}
-            ui = {k: v.to(gpu_device) for k, v in all_uncond_inputs[patch_idx].items()}
+            # Stack conditions into batches
+            ci_batch = {}
+            ui_batch = {}
+            for key in all_cond_inputs[patch_indices[0]]:
+                ci_batch[key] = torch.cat([all_cond_inputs[pi][key] for pi in patch_indices]).to(gpu_device)
+                ui_batch[key] = torch.cat([all_uncond_inputs[pi][key] for pi in patch_indices]).to(gpu_device)
 
             with torch.no_grad():
-                decoded = _sample_single_patch(
-                    gpu_model, scheduler, gpu_vae, ci, ui,
+                decoded = _sample_patches(
+                    gpu_model, scheduler, gpu_vae, ci_batch, ui_batch,
                     diffusion_config, autoencoder_model_config, cf_guidance_scale,
-                    patch_size, target_device=gpu_device)
-            results[patch_idx] = decoded.cpu()  # [1, 3, ps, ps]
+                    patch_size, target_device=gpu_device)  # [B, 3, ps, ps]
 
-            with lock:
-                progress[0] += 1
-                if progress[0] % n_workers == 0 or progress[0] == total_patches:
-                    print(f'  Patch {progress[0]}/{total_patches}')
+            decoded_cpu = decoded.cpu()
+            for k, pi in enumerate(patch_indices):
+                results[pi] = decoded_cpu[k:k+1]
 
-        if n_workers == 1:
-            # Single GPU: sequential
-            for pidx in range(total_patches):
-                _process_patch(pidx, devices[0])
-        else:
-            # Multi-GPU: process n_workers patches in parallel via threads
-            for batch_start in range(0, total_patches, n_workers):
-                batch_end = min(batch_start + n_workers, total_patches)
+        for chunk_start in range(0, total_patches, total_parallel):
+            chunk_indices = list(range(chunk_start, min(chunk_start + total_parallel, total_patches)))
+
+            if n_gpus == 1:
+                _process_batch_on_gpu(chunk_indices, devices[0])
+            else:
+                # Split chunk across GPUs
+                per_gpu = len(chunk_indices) // n_gpus
+                remainder = len(chunk_indices) % n_gpus
                 threads = []
-                for i, pidx in enumerate(range(batch_start, batch_end)):
-                    gpu_dev = devices[i % n_workers]
-                    t = threading.Thread(target=_process_patch, args=(pidx, gpu_dev))
+                offset = 0
+                for g in range(n_gpus):
+                    count = per_gpu + (1 if g < remainder else 0)
+                    gpu_indices = chunk_indices[offset:offset + count]
+                    offset += count
+                    t = threading.Thread(target=_process_batch_on_gpu,
+                                         args=(gpu_indices, devices[g]))
                     threads.append(t)
                     t.start()
                 for t in threads:
                     t.join()
 
-        # Accumulate results
+            done = min(chunk_start + total_parallel, total_patches)
+            print(f'  {done}/{total_patches} patches')
+
+        # Accumulate results with Gaussian blending
         for pidx, (yi, xi) in enumerate(all_positions):
-            decoded = results[pidx].squeeze(0)  # [3, ps, ps]
+            decoded = results[pidx].squeeze(0)
             output_sum[:, yi:yi + patch_size, xi:xi + patch_size] += decoded * gauss_weight_cpu
             weight_sum[:, yi:yi + patch_size, xi:xi + patch_size] += gauss_weight_cpu
 
@@ -319,6 +332,10 @@ def infer(args):
     diffusion_model_config = config['ldm_params']
     autoencoder_model_config = config['autoencoder_params']
     train_config = config['train_params']
+
+    # Override num_samples if specified via CLI
+    if args.num_samples is not None:
+        train_config['num_samples'] = args.num_samples
 
     scheduler = LinearNoiseScheduler(num_timesteps=diffusion_config['num_timesteps'],
                                      beta_start=diffusion_config['beta_start'],
@@ -411,6 +428,7 @@ def infer(args):
                               condition_types, encoder_model, encoder_extract_fn,
                               patch_size=dataset_config['im_size'],
                               stride=args.stride,
+                              patches_per_gpu=args.patches_per_gpu,
                               gpu_models=gpu_models, gpu_vaes=gpu_vaes)
         else:
             # Single-patch sampling
@@ -427,9 +445,13 @@ if __name__ == '__main__':
                         help='Enable full-resolution patch-based inference with stitching')
     parser.add_argument('--stride', type=int, default=192,
                         help='Stride for sliding window in full-image mode (default: 192, overlap=64)')
-    parser.add_argument('--ddim-steps', type=int, default=1000,
+    parser.add_argument('--ddim-steps', type=int, default=50,
                         help='Number of DDIM sampling steps (default: 50, set to 1000 for full DDPM)')
     parser.add_argument('--ddim-eta', type=float, default=0.0,
                         help='DDIM eta parameter (0=deterministic, 1=DDPM equivalent)')
+    parser.add_argument('--patches-per-gpu', type=int, default=8,
+                        help='Number of patches each GPU processes simultaneously (default: 8)')
+    parser.add_argument('--num-samples', type=int, default=None,
+                        help='Override num_samples from config (number of test images to process)')
     args = parser.parse_args()
     infer(args)
