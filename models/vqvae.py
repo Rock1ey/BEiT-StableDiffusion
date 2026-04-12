@@ -137,6 +137,21 @@ class VQVAE(nn.Module):
         out = self.pre_quant_conv(out)
         out, quant_losses, _ = self.quantize(out)
         return out, quant_losses
+
+    def encode_pre_quantize(self, x):
+        """Encode to continuous latent space (skip codebook quantization).
+        Useful for encoding out-of-domain images (e.g. HE condition images)
+        where the codebook was not trained."""
+        out = self.encoder_conv_in(x)
+        for idx, down in enumerate(self.encoder_layers):
+            out = down(out)
+        for mid in self.encoder_mids:
+            out = mid(out)
+        out = self.encoder_norm_out(out)
+        out = nn.SiLU()(out)
+        out = self.encoder_conv_out(out)
+        out = self.pre_quant_conv(out)
+        return out
     
     def decode(self, z):
         out = z

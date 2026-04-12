@@ -86,19 +86,27 @@ def _sample_patches(model, scheduler, vae, cond_input, uncond_input,
 
 
 def _prepare_cond_input(cond_patch, condition_types, encoder_model=None, encoder_extract_fn=None,
-                        target_device=None):
+                        target_device=None, vae=None, encode_cond_image=False):
     """Build cond_input and uncond_input dicts from a condition patch."""
     dev = target_device or device
     cond_input = {}
     uncond_input = {}
 
     if 'image' in condition_types:
-        cond_input['image'] = cond_patch.to(dev)
-        uncond_input['image'] = torch.zeros_like(cond_patch).to(dev)
+        cond_image = cond_patch.to(dev)
+        if encode_cond_image and vae is not None:
+            with torch.no_grad():
+                # Encode to VQVAE continuous latent (skip quantization for HE images)
+                cond_image_encoded = vae.encode_pre_quantize(cond_image.to(device)).to(dev)
+            cond_input['image'] = cond_image_encoded
+            uncond_input['image'] = torch.zeros_like(cond_image_encoded)
+        else:
+            cond_input['image'] = cond_image
+            uncond_input['image'] = torch.zeros_like(cond_image)
 
     if 'encoder' in condition_types:
         with torch.no_grad():
-            # Encoder always runs on GPU:0, move input there first
+            # Encoder always uses pixel-space images on GPU:0
             encoder_features = encoder_extract_fn(cond_patch.to(device), encoder_model, device)
             encoder_features = encoder_features.to(dev)
         cond_input['encoder'] = encoder_features
@@ -109,7 +117,8 @@ def _prepare_cond_input(cond_patch, condition_types, encoder_model=None, encoder
 
 def sample_single_image(model, scheduler, train_config, diffusion_model_config,
                         autoencoder_model_config, diffusion_config, dataset_config, vae,
-                        condition_types, encoder_model=None, encoder_extract_fn=None):
+                        condition_types, encoder_model=None, encoder_extract_fn=None,
+                        encode_cond_image=False):
     """
     Sample individual patches from test images (original behavior, for patch-trained models).
     """
@@ -133,7 +142,8 @@ def sample_single_image(model, scheduler, train_config, diffusion_model_config,
         cond_image = cond_data['image'].unsqueeze(0).to(device)
 
         cond_input, uncond_input = _prepare_cond_input(
-            cond_image, condition_types, encoder_model, encoder_extract_fn)
+            cond_image, condition_types, encoder_model, encoder_extract_fn,
+            vae=vae, encode_cond_image=encode_cond_image)
 
         decoded = _sample_patches(
             model, scheduler, vae, cond_input, uncond_input,
@@ -155,7 +165,7 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
                       autoencoder_model_config, diffusion_config, dataset_config, vae,
                       condition_types, encoder_model=None, encoder_extract_fn=None,
                       patch_size=256, stride=192, patches_per_gpu=8,
-                      gpu_models=None, gpu_vaes=None):
+                      gpu_models=None, gpu_vaes=None, encode_cond_image=False):
     """
     Full-resolution inference via sliding-window patch sampling with Gaussian blending.
 
@@ -225,7 +235,8 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
             patch = input_tensor[:, yi:yi + patch_size, xi:xi + patch_size].unsqueeze(0)
             ci, ui = _prepare_cond_input(
                 patch, condition_types, encoder_model, encoder_extract_fn,
-                target_device=torch.device('cpu'))
+                target_device=torch.device('cpu'),
+                vae=vae, encode_cond_image=encode_cond_image)
             all_cond_inputs.append(ci)
             all_uncond_inputs.append(ui)
 
@@ -363,8 +374,14 @@ def infer(args):
                                                       train_config['ldm_ckpt_name']),
                                          map_location=device, weights_only=False)
         if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
-            model.load_state_dict(ckpt['model_state_dict'])
-            print('  Trained for {} epochs, loss={:.4f}'.format(ckpt['epoch'], ckpt.get('loss', -1)))
+            # Prefer EMA weights if available (unless --no-ema)
+            if not args.no_ema and 'ema_state_dict' in ckpt:
+                model.load_state_dict(ckpt['ema_state_dict'])
+                print('  Using EMA weights (epoch {}, loss={:.4f})'.format(
+                    ckpt['epoch'], ckpt.get('loss', -1)))
+            else:
+                model.load_state_dict(ckpt['model_state_dict'])
+                print('  Trained for {} epochs, loss={:.4f}'.format(ckpt['epoch'], ckpt.get('loss', -1)))
         else:
             model.load_state_dict(ckpt)
     else:
@@ -401,6 +418,12 @@ def infer(args):
             gpu_vaes[dev].eval()
         print(f'Replicated UNet+VAE to {num_gpus} GPUs for parallel patch inference')
 
+    # Check if condition images should be encoded via VQVAE
+    encode_cond_image = False
+    if 'image' in condition_types:
+        encode_cond_image = get_config_value(
+            condition_config['image_condition_config'], 'encode_cond_image', False)
+
     with torch.no_grad():
         if args.full_image:
             # Patch-based full-resolution inference
@@ -410,12 +433,14 @@ def infer(args):
                               patch_size=dataset_config['im_size'],
                               stride=args.stride,
                               patches_per_gpu=args.patches_per_gpu,
-                              gpu_models=gpu_models, gpu_vaes=gpu_vaes)
+                              gpu_models=gpu_models, gpu_vaes=gpu_vaes,
+                              encode_cond_image=encode_cond_image)
         else:
             # Single-patch sampling
             sample_single_image(model, scheduler, train_config, diffusion_model_config,
                                 autoencoder_model_config, diffusion_config, dataset_config, vae,
-                                condition_types, encoder_model, encoder_extract_fn)
+                                condition_types, encoder_model, encoder_extract_fn,
+                                encode_cond_image=encode_cond_image)
 
 
 if __name__ == '__main__':
@@ -434,5 +459,7 @@ if __name__ == '__main__':
                         help='Number of patches each GPU processes simultaneously (default: 8)')
     parser.add_argument('--num-samples', type=int, default=None,
                         help='Override num_samples from config (number of test images to process)')
+    parser.add_argument('--no-ema', action='store_true',
+                        help='Use raw model weights instead of EMA weights')
     args = parser.parse_args()
     infer(args)

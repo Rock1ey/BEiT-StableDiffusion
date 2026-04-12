@@ -25,11 +25,12 @@ ldm_params:
   condition_config:
     condition_types: [ 'image', 'encoder' ]   # Dual conditioning
     image_condition_config:
-      image_condition_input_channels: 3
-      image_condition_output_channels: 3
+      image_condition_input_channels: 4       # VQVAE latent channels (was 3)
+      image_condition_output_channels: 4
       image_condition_h: 256
       image_condition_w: 256
       cond_drop_prob: 0.1
+      encode_cond_image: true                 # Encode condition image via VQVAE
     encoder_condition_config:
       encoder_embed_dim: 768              # DINOv2 ViT-B/14 output dim
       encoder_model_name: 'dinov2'        # Use DINOv2 as feature encoder
@@ -51,7 +52,7 @@ autoencoder_params:
 train_params:
   seed: 1111
   task_name: 'hemit_dino'
-  ldm_batch_size: 48                 # 2x RTX 4090 DataParallel (24 per GPU)
+  ldm_batch_size: 64                 # 2x RTX 4090 DDP (32 per GPU)
   autoencoder_batch_size: 8            # 2x RTX 4090 DataParallel (4 per GPU)
   disc_start: 5000
   disc_weight: 0.5
@@ -59,11 +60,11 @@ train_params:
   commitment_beta: 0.2
   perceptual_weight: 1
   kl_weight: 0.000005
-  ldm_epochs: 400
+  ldm_epochs: 200
   autoencoder_epochs: 20
   num_samples: 8
   num_grid_rows: 4
-  ldm_lr: 0.00002 # Slightly higher to help with DINOv2 conditioning
+  ldm_lr: 0.00005
   autoencoder_lr: 0.00005
   autoencoder_acc_steps: 4
   autoencoder_img_save_steps: 64
@@ -78,5 +79,7 @@ train_params:
   vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
   vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
   lr_scheduler: 'cosine'
-  ldm_lr_min: 0.000001
+  ldm_lr_min: 0
+  ema_decay: 0.9999
+  grad_clip: 1.0
   use_amp: True                        # BF16 mixed precision on RTX 4090

@@ -1,7 +1,30 @@
 import pickle
 import glob
 import os
+import copy
 import torch
+
+
+class ModelEMA:
+    """Exponential Moving Average of model parameters for improved generation quality."""
+
+    def __init__(self, model, decay=0.9999):
+        self.decay = decay
+        self.shadow = copy.deepcopy(model)
+        self.shadow.eval()
+        for p in self.shadow.parameters():
+            p.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model):
+        for ema_p, model_p in zip(self.shadow.parameters(), model.parameters()):
+            ema_p.data.lerp_(model_p.data, 1.0 - self.decay)
+
+    def state_dict(self):
+        return self.shadow.state_dict()
+
+    def load_state_dict(self, state_dict):
+        self.shadow.load_state_dict(state_dict)
 
 
 def load_latents(latent_path):
