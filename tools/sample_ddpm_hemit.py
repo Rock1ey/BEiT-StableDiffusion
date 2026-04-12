@@ -91,8 +91,8 @@ def _prepare_cond_input(cond_patch, condition_types, encoder_model=None, encoder
 
     if 'encoder' in condition_types:
         with torch.no_grad():
-            # Encoder always runs on its own device (GPU:0), then move result
-            encoder_features = encoder_extract_fn(cond_patch, encoder_model, device)
+            # Encoder always runs on GPU:0, move input there first
+            encoder_features = encoder_extract_fn(cond_patch.to(device), encoder_model, device)
             encoder_features = encoder_features.to(dev)
         cond_input['encoder'] = encoder_features
         uncond_input['encoder'] = torch.zeros_like(encoder_features)
