@@ -24,6 +24,18 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 num_gpus = torch.cuda.device_count()
 
 
+class VQVAEReconstruct(torch.nn.Module):
+    """Wrapper that puts encode→decode into forward() so DataParallel can split batches."""
+    def __init__(self, vae):
+        super().__init__()
+        self.vae = vae
+
+    def forward(self, x):
+        encoded, _ = self.vae.encode(x)
+        decoded = self.vae.decode(encoded)
+        return decoded
+
+
 def evaluate_vqvae_ceiling(args):
     with open(args.config_path, 'r') as f:
         config = yaml.safe_load(f)
@@ -41,6 +53,14 @@ def evaluate_vqvae_ceiling(args):
     assert os.path.exists(ckpt_path), f'VQVAE checkpoint not found: {ckpt_path}'
     vae.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
     print(f'Loaded VQVAE from {ckpt_path}')
+
+    # Wrap for multi-GPU: encode/decode are custom methods, not forward(),
+    # so we wrap them into forward() for DataParallel to split batches.
+    vae_reconstruct = VQVAEReconstruct(vae)
+    if num_gpus > 1:
+        vae_reconstruct = torch.nn.DataParallel(vae_reconstruct)
+        print(f'Using DataParallel on {num_gpus} GPUs')
+    vae_reconstruct.eval()
 
     # Find test images (labels = ground truth targets)
     test_dir = os.path.join(dataset_config['im_path'], 'test')
@@ -84,9 +104,8 @@ def evaluate_vqvae_ceiling(args):
                 batch_t = torch.stack(all_patches).to(device)  # [N, 3, ps, ps]
                 batch_input = batch_t * 2 - 1  # [-1, 1]
 
-                # Batch encode → decode
-                encoded, _ = vae.encode(batch_input)
-                decoded = vae.decode(encoded)
+                # Batch encode → decode (DataParallel splits across GPUs)
+                decoded = vae_reconstruct(batch_input)
                 decoded = torch.clamp((decoded + 1) / 2, 0, 1)  # [N, 3, ps, ps] in [0,1]
 
                 # Compute per-patch metrics
@@ -111,8 +130,7 @@ def evaluate_vqvae_ceiling(args):
                 patch_t = TF.to_tensor(patch).unsqueeze(0).to(device)
                 patch_input = patch_t * 2 - 1
 
-                encoded, _ = vae.encode(patch_input)
-                decoded = vae.decode(encoded)
+                decoded = vae_reconstruct(patch_input)
                 decoded = torch.clamp((decoded + 1) / 2, 0, 1)
 
                 ssim_val = compute_ssim(patch_t, decoded).item()
