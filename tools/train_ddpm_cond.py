@@ -22,6 +22,7 @@ num_gpus = torch.cuda.device_count()
 # Enable TF32 for free speedup on Ampere+ GPUs (RTX 30xx/40xx)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
 
 
 def train(args):
@@ -160,14 +161,7 @@ def train(args):
             raw_model.load_state_dict(ckpt['model_state_dict'])
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt['epoch']
-            if lr_scheduler is not None and 'lr_scheduler_state_dict' in ckpt:
-                lr_scheduler.load_state_dict(ckpt['lr_scheduler_state_dict'])
-            elif lr_scheduler is not None:
-                # Fast-forward scheduler to current epoch
-                for _ in range(start_epoch):
-                    if lr_scheduler_type == 'cosine':
-                        lr_scheduler.step()
-                    # plateau requires loss, skip fast-forward
+            # Skip loading lr_scheduler state - will recreate fresh cycle after resume block
             print('Resumed from epoch {}'.format(start_epoch))
         else:
             # Legacy checkpoint (plain state_dict)
@@ -178,6 +172,17 @@ def train(args):
                     if lr_scheduler_type == 'cosine':
                         lr_scheduler.step()
             print('Loaded legacy checkpoint, resuming from epoch {}'.format(start_epoch))
+
+    # After resume: recreate LR scheduler for remaining epochs (fresh cosine cycle)
+    if start_epoch > 0 and lr_scheduler is not None and lr_scheduler_type == 'cosine':
+        remaining = num_epochs - start_epoch
+        if remaining > 0:
+            for pg in optimizer.param_groups:
+                pg['lr'] = train_config['ldm_lr']
+            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=remaining, eta_min=lr_min)
+            print('Fresh cosine LR schedule: {:.2e} -> {:.2e} over {} epochs'.format(
+                train_config['ldm_lr'], lr_min, remaining))
     
     # Load vae and freeze parameters ONLY if latents already not saved
     if not im_dataset.use_latents:
@@ -205,8 +210,8 @@ def train(args):
                 im, cond_input = data
             else:
                 im = data
-            optimizer.zero_grad()
-            im = im.float().to(device)
+            optimizer.zero_grad(set_to_none=True)
+            im = im.float().to(device, non_blocking=True)
             if not im_dataset.use_latents:
                 with torch.no_grad():
                     im, _ = vae.encode(im)
