@@ -5,6 +5,10 @@
 # =============================================================================
 set -e
 
+# Activate conda environment
+eval "$(conda shell.bash hook)"
+conda activate sd-pytorch
+
 CONFIG="config/hemit_dino.yaml"
 TASK_DIR="hemit_dino"
 LATENT_DIR="${TASK_DIR}/vqvae_latents"
