@@ -51,8 +51,8 @@ autoencoder_params:
 train_params:
   seed: 1111
   task_name: 'hemit_phikon'
-  ldm_batch_size: 24                 # AMP BF16 allows larger batch
-  autoencoder_batch_size: 4
+  ldm_batch_size: 48                 # 2x RTX 4090 DataParallel (24 per GPU)
+  autoencoder_batch_size: 8            # 2x RTX 4090 DataParallel (4 per GPU)
   disc_start: 5000
   disc_weight: 0.5
   codebook_weight: 1

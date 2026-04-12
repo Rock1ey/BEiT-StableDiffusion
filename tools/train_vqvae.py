@@ -17,6 +17,7 @@ from torch.optim import Adam
 from torchvision.utils import make_grid
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+num_gpus = torch.cuda.device_count()
 
 
 def train(args):
@@ -76,6 +77,12 @@ def train(args):
     # No need to freeze lpips as lpips.py takes care of that
     lpips_model = LPIPS().eval().to(device)
     discriminator = Discriminator(im_channels=dataset_config['im_channels']).to(device)
+
+    # Multi-GPU: wrap trainable models in DataParallel
+    if num_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        discriminator = torch.nn.DataParallel(discriminator)
+        print(f'Using DataParallel on {num_gpus} GPUs')
     
     optimizer_d = Adam(discriminator.parameters(), lr=train_config['autoencoder_lr'], betas=(0.5, 0.999))
     optimizer_g = Adam(model.parameters(), lr=train_config['autoencoder_lr'], betas=(0.5, 0.999))
@@ -193,10 +200,12 @@ def train(args):
                          np.mean(perceptual_losses),
                          np.mean(codebook_losses)))
         
-        torch.save(model.state_dict(), os.path.join(train_config['task_name'],
-                                                    train_config['vqvae_autoencoder_ckpt_name']))
-        torch.save(discriminator.state_dict(), os.path.join(train_config['task_name'],
-                                                            train_config['vqvae_discriminator_ckpt_name']))
+        torch.save((model.module if isinstance(model, torch.nn.DataParallel) else model).state_dict(),
+                   os.path.join(train_config['task_name'],
+                                train_config['vqvae_autoencoder_ckpt_name']))
+        torch.save((discriminator.module if isinstance(discriminator, torch.nn.DataParallel) else discriminator).state_dict(),
+                   os.path.join(train_config['task_name'],
+                                train_config['vqvae_discriminator_ckpt_name']))
     print('Done Training...')
 
 

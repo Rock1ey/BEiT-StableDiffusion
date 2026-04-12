@@ -17,6 +17,7 @@ from utils.config_utils import *
 from utils.diffusion_utils import *
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+num_gpus = torch.cuda.device_count()
 
 # Enable TF32 for free speedup on Ampere+ GPUs (RTX 30xx/40xx)
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -102,6 +103,11 @@ def train(args):
     model = Unet(im_channels=autoencoder_model_config['z_channels'],
                  model_config=diffusion_model_config).to(device)
     model.train()
+
+    # Multi-GPU: wrap UNet in DataParallel
+    if num_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f'Using DataParallel on {num_gpus} GPUs')
     
     vae = None
     # Load VAE ONLY if latents are not to be saved or some are missing
@@ -148,8 +154,10 @@ def train(args):
     if args.resume and os.path.exists(ckpt_path):
         print('Resuming from checkpoint: {}'.format(ckpt_path))
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        # Get the raw model (unwrap DataParallel if needed)
+        raw_model = model.module if isinstance(model, torch.nn.DataParallel) else model
         if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
-            model.load_state_dict(ckpt['model_state_dict'])
+            raw_model.load_state_dict(ckpt['model_state_dict'])
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt['epoch']
             if lr_scheduler is not None and 'lr_scheduler_state_dict' in ckpt:
@@ -163,7 +171,7 @@ def train(args):
             print('Resumed from epoch {}'.format(start_epoch))
         else:
             # Legacy checkpoint (plain state_dict)
-            model.load_state_dict(ckpt)
+            raw_model.load_state_dict(ckpt)
             start_epoch = get_config_value(train_config, 'resume_from_epoch', 0)
             if lr_scheduler is not None:
                 for _ in range(start_epoch):
@@ -281,7 +289,7 @@ def train(args):
         log_file.flush()
 
         ckpt_dict = {
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': (model.module if isinstance(model, torch.nn.DataParallel) else model).state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'epoch': epoch_idx + 1,
             'loss': epoch_loss,

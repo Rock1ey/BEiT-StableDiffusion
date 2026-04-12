@@ -21,6 +21,7 @@ from models.vqvae import VQVAE
 from utils.config_utils import get_config_value
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+num_gpus = torch.cuda.device_count()
 
 
 def evaluate_vqvae_ceiling(args):
@@ -68,29 +69,35 @@ def evaluate_vqvae_ceiling(args):
             basename = os.path.basename(img_path)
 
             if args.full_image and (orig_h > patch_size or orig_w > patch_size):
-                # Patch-based: cut into grid, reconstruct each patch, reassemble
-                patches_ssim, patches_psnr, patches_ms_ssim, patches_lpips = [], [], [], []
+                # Patch-based: cut into grid, batch encode/decode
                 rows = orig_h // patch_size
                 cols = orig_w // patch_size
 
+                # Collect all patches into a batch
+                all_patches = []
                 for r in range(rows):
                     for c in range(cols):
                         y, x = r * patch_size, c * patch_size
                         patch = TF.crop(img, y, x, patch_size, patch_size)
-                        patch_t = TF.to_tensor(patch).unsqueeze(0).to(device)  # [1,3,256,256] in [0,1]
-                        patch_input = patch_t * 2 - 1  # [-1,1]
+                        all_patches.append(TF.to_tensor(patch))  # [3, ps, ps] in [0,1]
 
-                        # Encode → decode
-                        encoded, _ = vae.encode(patch_input)
-                        decoded = vae.decode(encoded)
-                        decoded = torch.clamp((decoded + 1) / 2, 0, 1)  # [0,1]
+                batch_t = torch.stack(all_patches).to(device)  # [N, 3, ps, ps]
+                batch_input = batch_t * 2 - 1  # [-1, 1]
 
-                        patches_ssim.append(compute_ssim(patch_t, decoded).item())
-                        patches_psnr.append(compute_psnr(patch_t, decoded).item())
-                        patches_ms_ssim.append(compute_ms_ssim(patch_t, decoded).item())
+                # Batch encode → decode
+                encoded, _ = vae.encode(batch_input)
+                decoded = vae.decode(encoded)
+                decoded = torch.clamp((decoded + 1) / 2, 0, 1)  # [N, 3, ps, ps] in [0,1]
 
-                        lpips_val = lpips_model(patch_t * 2 - 1, decoded * 2 - 1).item()
-                        patches_lpips.append(lpips_val)
+                # Compute per-patch metrics
+                patches_ssim, patches_psnr, patches_ms_ssim, patches_lpips = [], [], [], []
+                for k in range(batch_t.shape[0]):
+                    gt_k = batch_t[k:k+1]
+                    dec_k = decoded[k:k+1]
+                    patches_ssim.append(compute_ssim(gt_k, dec_k).item())
+                    patches_psnr.append(compute_psnr(gt_k, dec_k).item())
+                    patches_ms_ssim.append(compute_ms_ssim(gt_k, dec_k).item())
+                    patches_lpips.append(lpips_model(gt_k * 2 - 1, dec_k * 2 - 1).item())
 
                 avg_ssim = sum(patches_ssim) / len(patches_ssim)
                 avg_psnr = sum(patches_psnr) / len(patches_psnr)

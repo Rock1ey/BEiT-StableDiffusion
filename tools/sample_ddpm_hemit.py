@@ -15,6 +15,7 @@ from scheduler.ddim_scheduler import DDIMScheduler
 from utils.config_utils import *
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+num_gpus = torch.cuda.device_count()
 
 
 def _make_gaussian_weight(patch_size, device):
@@ -31,13 +32,20 @@ def _sample_single_patch(model, scheduler, vae, cond_input, uncond_input,
                          diffusion_config, autoencoder_model_config, cf_guidance_scale,
                          im_size):
     """
-    Run the full reverse diffusion process for a single patch.
-    Supports both DDPM (LinearNoiseScheduler) and DDIM (DDIMScheduler).
-    Returns decoded image tensor [1, 3, patch_size, patch_size] in [0, 1].
+    Run the full reverse diffusion process for one or more patches.
+    cond_input values can be [B, ...] for batched inference.
+    Returns decoded image tensor [B, 3, patch_size, patch_size] in [0, 1].
     """
     latent_size = im_size // 2 ** sum(autoencoder_model_config['down_sample'])
 
-    xt = torch.randn((1, autoencoder_model_config['z_channels'],
+    # Determine batch size from cond_input
+    batch_size = 1
+    for v in cond_input.values():
+        if isinstance(v, torch.Tensor):
+            batch_size = v.shape[0]
+            break
+
+    xt = torch.randn((batch_size, autoencoder_model_config['z_channels'],
                        latent_size, latent_size)).to(device)
 
     is_ddim = isinstance(scheduler, DDIMScheduler)
@@ -141,10 +149,11 @@ def sample_single_image(model, scheduler, train_config, diffusion_model_config,
 def sample_full_image(model, scheduler, train_config, diffusion_model_config,
                       autoencoder_model_config, diffusion_config, dataset_config, vae,
                       condition_types, encoder_model=None, encoder_extract_fn=None,
-                      patch_size=256, stride=192):
+                      patch_size=256, stride=192, infer_batch_size=1):
     """
     Full-resolution inference via sliding-window patch sampling with Gaussian blending.
     Produces complete images (e.g. 1024x1024) from patch-trained models.
+    infer_batch_size: number of patches to sample in parallel (use >1 with multi-GPU).
     """
     cf_guidance_scale = get_config_value(train_config, 'cf_guidance_scale', 1.0)
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
@@ -184,33 +193,41 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
         if x_positions[-1] + patch_size < orig_w:
             x_positions.append(orig_w - patch_size)
 
-        total_patches = len(y_positions) * len(x_positions)
+        # Collect all patch positions
+        all_positions = [(yi, xi) for yi in y_positions for xi in x_positions]
+        total_patches = len(all_positions)
         print(f'Image {img_idx}: {orig_h}x{orig_w}, {total_patches} patches '
-              f'(stride={stride}, overlap={patch_size - stride})')
+              f'(stride={stride}, overlap={patch_size - stride}, batch={infer_batch_size})')
 
-        patch_idx = 0
-        for yi in y_positions:
-            for xi in x_positions:
-                patch_idx += 1
-                # Extract condition patch
-                cond_patch = input_tensor[:, yi:yi + patch_size, xi:xi + patch_size]
-                cond_patch = cond_patch.unsqueeze(0).to(device)  # [1, 3, ps, ps]
+        # Process patches in batches
+        for batch_start in range(0, total_patches, infer_batch_size):
+            batch_positions = all_positions[batch_start:batch_start + infer_batch_size]
+            bs = len(batch_positions)
 
-                cond_input, uncond_input = _prepare_cond_input(
-                    cond_patch, condition_types, encoder_model, encoder_extract_fn)
+            # Collect batch of condition patches
+            cond_patches = []
+            for (yi, xi) in batch_positions:
+                patch = input_tensor[:, yi:yi + patch_size, xi:xi + patch_size]
+                cond_patches.append(patch)
+            cond_batch = torch.stack(cond_patches).to(device)  # [bs, 3, ps, ps]
 
-                decoded = _sample_single_patch(
-                    model, scheduler, vae, cond_input, uncond_input,
-                    diffusion_config, autoencoder_model_config, cf_guidance_scale,
-                    patch_size)  # [1, 3, ps, ps] in [0, 1]
+            cond_input, uncond_input = _prepare_cond_input(
+                cond_batch, condition_types, encoder_model, encoder_extract_fn)
 
-                # Accumulate with Gaussian weighting
+            decoded = _sample_single_patch(
+                model, scheduler, vae, cond_input, uncond_input,
+                diffusion_config, autoencoder_model_config, cf_guidance_scale,
+                patch_size)  # [bs, 3, ps, ps] in [0, 1]
+
+            # Accumulate each patch with Gaussian weighting
+            for k, (yi, xi) in enumerate(batch_positions):
                 output_sum[:, yi:yi + patch_size, xi:xi + patch_size] += \
-                    decoded.squeeze(0).to(device) * gauss_weight
+                    decoded[k].to(device) * gauss_weight
                 weight_sum[:, yi:yi + patch_size, xi:xi + patch_size] += gauss_weight
 
-                if patch_idx % 5 == 0 or patch_idx == total_patches:
-                    print(f'  Patch {patch_idx}/{total_patches}')
+            done = min(batch_start + infer_batch_size, total_patches)
+            if done % max(infer_batch_size, 5) == 0 or done == total_patches:
+                print(f'  Patch {done}/{total_patches}')
 
         # Normalize by weight
         output_full = output_sum / weight_sum.clamp(min=1e-8)
@@ -310,6 +327,11 @@ def infer(args):
         raise Exception('Model checkpoint {} not found'.format(os.path.join(train_config['task_name'],
                                                                             train_config['ldm_ckpt_name'])))
 
+    # Multi-GPU: wrap UNet in DataParallel for batched inference
+    if num_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f'Inference using DataParallel on {num_gpus} GPUs')
+
     if not os.path.exists(train_config['task_name']):
         os.mkdir(train_config['task_name'])
 
@@ -329,12 +351,14 @@ def infer(args):
 
     with torch.no_grad():
         if args.full_image:
+            infer_batch_size = args.infer_batch_size if args.infer_batch_size else num_gpus
             # Patch-based full-resolution inference
             sample_full_image(model, scheduler, train_config, diffusion_model_config,
                               autoencoder_model_config, diffusion_config, dataset_config, vae,
                               condition_types, encoder_model, encoder_extract_fn,
                               patch_size=dataset_config['im_size'],
-                              stride=args.stride)
+                              stride=args.stride,
+                              infer_batch_size=infer_batch_size)
         else:
             # Single-patch sampling
             sample_single_image(model, scheduler, train_config, diffusion_model_config,
@@ -354,5 +378,7 @@ if __name__ == '__main__':
                         help='Number of DDIM sampling steps (default: 50, set to 1000 for full DDPM)')
     parser.add_argument('--ddim-eta', type=float, default=0.0,
                         help='DDIM eta parameter (0=deterministic, 1=DDPM equivalent)')
+    parser.add_argument('--infer-batch-size', type=int, default=None,
+                        help='Number of patches to sample in parallel (default: num_gpus)')
     args = parser.parse_args()
     infer(args)

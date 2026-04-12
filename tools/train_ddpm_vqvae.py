@@ -14,6 +14,7 @@ from models.vqvae import VQVAE
 from scheduler.linear_noise_scheduler import LinearNoiseScheduler
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+num_gpus = torch.cuda.device_count()
 
 
 def train(args):
@@ -60,6 +61,11 @@ def train(args):
     model = Unet(im_channels=autoencoder_model_config['z_channels'],
                  model_config=diffusion_model_config).to(device)
     model.train()
+
+    # Multi-GPU
+    if num_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f'Using DataParallel on {num_gpus} GPUs')
     
     # Load VAE ONLY if latents are not to be used or are missing
     if not im_dataset.use_latents:
@@ -111,8 +117,9 @@ def train(args):
             epoch_idx + 1,
             np.mean(losses)))
         
-        torch.save(model.state_dict(), os.path.join(train_config['task_name'],
-                                                    train_config['ldm_ckpt_name']))
+        torch.save((model.module if isinstance(model, torch.nn.DataParallel) else model).state_dict(),
+                   os.path.join(train_config['task_name'],
+                                train_config['ldm_ckpt_name']))
     
     print('Done Training ...')
 
