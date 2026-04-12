@@ -54,7 +54,7 @@ def _sample_patches(model, scheduler, vae, cond_input, uncond_input,
 
     if is_ddim:
         timesteps = scheduler.timesteps
-        for t_idx in range(len(timesteps)):
+        for t_idx in tqdm(range(len(timesteps)), desc='DDIM Sampling', leave=False):
             t = timesteps[t_idx].expand(batch_size).to(dev)
             noise_pred_cond = model(xt, t, cond_input)
 
@@ -66,7 +66,7 @@ def _sample_patches(model, scheduler, vae, cond_input, uncond_input,
 
             xt, x0_pred = scheduler.sample_prev_timestep(xt, noise_pred, t_idx)
     else:
-        for i in range(diffusion_config['num_timesteps'] - 1, -1, -1):
+        for i in tqdm(range(diffusion_config['num_timesteps'] - 1, -1, -1), desc='DDPM Sampling', leave=False):
             t = torch.full((batch_size,), i, dtype=torch.long, device=dev)
             noise_pred_cond = model(xt, t, cond_input)
 
@@ -168,7 +168,6 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
     # Load test images at original resolution
     test_dir = os.path.join(dataset_config['im_path'], 'test')
     input_dir = os.path.join(test_dir, 'input')
-    label_dir = os.path.join(test_dir, 'label')
     import glob
     input_paths = sorted(glob.glob(os.path.join(input_dir, '*')))
 
@@ -292,29 +291,11 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
         output_full = output_sum / weight_sum.clamp(min=1e-8)
         output_full = output_full.clamp(0, 1).cpu()
 
-        # Save: input | generated | ground truth (if available)
-        input_vis = (input_tensor + 1) / 2  # [3, H, W] in [0, 1]
-
-        # Check if ground truth exists
+        # Save individual generated image (needed for evaluation)
         basename = os.path.basename(input_path)
-        label_path = os.path.join(label_dir, basename)
-        panels = [input_vis, output_full]
-        if os.path.exists(label_path):
-            label_im = Image.open(label_path).convert('RGB')
-            label_tensor = TF.to_tensor(label_im)
-            label_im.close()
-            panels.append(label_tensor)
-
-        # Save individual images
         out_img = torchvision.transforms.ToPILImage()(output_full)
         out_img.save(os.path.join(out_dir, 'generated_{}'.format(basename)))
         out_img.close()
-
-        # Save comparison grid
-        grid = make_grid(torch.stack(panels), nrow=len(panels))
-        grid_img = torchvision.transforms.ToPILImage()(grid)
-        grid_img.save(os.path.join(out_dir, 'compare_{}.png'.format(img_idx)))
-        grid_img.close()
 
     print('Saved full-resolution samples to {}'.format(out_dir))
 
@@ -443,8 +424,8 @@ if __name__ == '__main__':
                         default='config/hemit.yaml', type=str)
     parser.add_argument('--full-image', action='store_true',
                         help='Enable full-resolution patch-based inference with stitching')
-    parser.add_argument('--stride', type=int, default=256,
-                        help='Stride for sliding window in full-image mode (default: 256 = no overlap)')
+    parser.add_argument('--stride', type=int, default=192,
+                        help='Stride for sliding window in full-image mode (default: 192, overlap=64)')
     parser.add_argument('--ddim-steps', type=int, default=1000,
                         help='Number of DDIM sampling steps (set <1000 to enable DDIM, 1000 = full DDPM)')
     parser.add_argument('--ddim-eta', type=float, default=0.0,
