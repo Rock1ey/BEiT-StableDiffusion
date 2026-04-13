@@ -132,9 +132,8 @@ def sample_single_image(model, scheduler, train_config, diffusion_model_config,
                            im_channels=dataset_config['im_channels'],
                            condition_config=condition_config)
 
-    cf_guidance_scale = get_config_value(train_config, 'cf_guidance_scale', 1.0)
-
-    out_dir = os.path.join(train_config['task_name'], 'cond_hemit_samples')
+    cf_guidance_scale = train_config.get('cf_guidance_scale', 1.0)
+    out_dir = train_config.get('out_dir', os.path.join(train_config['task_name'], 'cond_hemit_samples'))
     os.makedirs(out_dir, exist_ok=True)
 
     for sample_idx in range(min(len(dataset), train_config['num_samples'])):
@@ -172,7 +171,7 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
     Multi-GPU strategy: each GPU processes a BATCH of patches independently.
     patches_per_gpu: number of patches each GPU processes simultaneously.
     """
-    cf_guidance_scale = get_config_value(train_config, 'cf_guidance_scale', 1.0)
+    cf_guidance_scale = train_config.get('cf_guidance_scale', 1.0)
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
 
     # Load test images at original resolution
@@ -181,7 +180,7 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
     import glob
     input_paths = sorted(glob.glob(os.path.join(input_dir, '*')))
 
-    out_dir = os.path.join(train_config['task_name'], 'cond_hemit_full_samples')
+    out_dir = train_config.get('out_dir', os.path.join(train_config['task_name'], 'cond_hemit_full_samples'))
     os.makedirs(out_dir, exist_ok=True)
 
     gauss_weight_cpu = _make_gaussian_weight(patch_size, torch.device('cpu'))
@@ -318,9 +317,13 @@ def infer(args):
     autoencoder_model_config = config['autoencoder_params']
     train_config = config['train_params']
 
-    # Override num_samples if specified via CLI
+    # CLI参数覆盖
     if args.num_samples is not None:
         train_config['num_samples'] = args.num_samples
+    if hasattr(args, 'cf_guidance_scale') and args.cf_guidance_scale is not None:
+        train_config['cf_guidance_scale'] = args.cf_guidance_scale
+    if hasattr(args, 'out_dir') and args.out_dir is not None:
+        train_config['out_dir'] = args.out_dir
 
     scheduler = LinearNoiseScheduler(num_timesteps=diffusion_config['num_timesteps'],
                                      beta_start=diffusion_config['beta_start'],
@@ -454,5 +457,9 @@ if __name__ == '__main__':
                         help='Override num_samples from config (number of test images to process)')
     parser.add_argument('--no-ema', action='store_true',
                         help='Use raw model weights instead of EMA weights')
+    parser.add_argument('--cf-guidance-scale', type=float, default=None,
+                        help='Override cf_guidance_scale for classifier-free guidance (default: from config)')
+    parser.add_argument('--out-dir', type=str, default=None,
+                        help='Override output directory for saving results')
     args = parser.parse_args()
     infer(args)
