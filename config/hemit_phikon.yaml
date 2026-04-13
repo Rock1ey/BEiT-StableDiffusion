@@ -52,7 +52,7 @@ train_params:
   seed: 1111
   task_name: 'hemit_phikon'
   ldm_batch_size: 48                 # lower global batch to reduce peak VRAM
-  ldm_micro_batch_size: 2            # gradient accumulation micro-batch per GPU step
+  ldm_micro_batch_size: 0            # disable micro-batching for max throughput
   autoencoder_batch_size: 8            # 2x RTX 4090 DataParallel (4 per GPU)
   disc_start: 5000
   disc_weight: 0.5
@@ -73,7 +73,7 @@ train_params:
   lambda_l1: 0.5
   lambda_lpips: 0.0                  # disable LPIPS first to avoid OOM; enable later
   lpips_every: 4                     # effective only when lambda_lpips > 0
-  num_workers: 8
+  num_workers: 12
   vae_latent_dir_name: 'vae_latents'
   vqvae_latent_dir_name: 'vqvae_latents'
   ldm_ckpt_name: 'ddpm_ckpt_hemit_phikon.pth'
@@ -86,4 +86,4 @@ train_params:
   ema_decay: 0.9999
   grad_clip: 1.0
   use_amp: True                        # BF16 mixed precision on RTX 4090
-  use_torch_compile: false             # compile can increase memory peak
+  use_torch_compile: true              # enable compile for better throughput

@@ -21,6 +21,8 @@ import torch.distributed as dist
 # Enable TF32 for free speedup on Ampere+ GPUs (RTX 30xx/40xx)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
+torch.set_float32_matmul_precision('high')
 
 
 def setup_ddp():
