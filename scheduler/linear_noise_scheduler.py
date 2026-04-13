@@ -43,6 +43,27 @@ class LinearNoiseScheduler:
         # Apply and Return Forward process equation
         return (sqrt_alpha_cum_prod.to(original.device) * original
                 + sqrt_one_minus_alpha_cum_prod.to(original.device) * noise)
+
+    def predict_start_from_noise(self, xt, noise_pred, t):
+        r"""
+        Recover x0 from xt and predicted noise for batched timesteps.
+        :param xt: noised sample at timestep t, shape (B, C, H, W)
+        :param noise_pred: model-predicted noise, shape (B, C, H, W)
+        :param t: timestep tensor of shape (B,)
+        :return: predicted x0, shape (B, C, H, W)
+        """
+        xt_shape = xt.shape
+        batch_size = xt_shape[0]
+
+        sqrt_alpha_cum_prod = self.sqrt_alpha_cum_prod.to(xt.device)[t].reshape(batch_size)
+        sqrt_one_minus_alpha_cum_prod = self.sqrt_one_minus_alpha_cum_prod.to(xt.device)[t].reshape(batch_size)
+
+        for _ in range(len(xt_shape) - 1):
+            sqrt_alpha_cum_prod = sqrt_alpha_cum_prod.unsqueeze(-1)
+            sqrt_one_minus_alpha_cum_prod = sqrt_one_minus_alpha_cum_prod.unsqueeze(-1)
+
+        x0 = (xt - sqrt_one_minus_alpha_cum_prod * noise_pred) / sqrt_alpha_cum_prod
+        return torch.clamp(x0, -1., 1.)
     
     def sample_prev_timestep(self, xt, noise_pred, t):
         r"""
