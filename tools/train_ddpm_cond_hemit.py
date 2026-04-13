@@ -10,7 +10,7 @@ from dataset.celeb_dataset import CelebDataset
 from dataset.hemit_dataset import HemitDataset
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from models.unet_cond_base import Unet
+from models.unet_cond_hemit import Unet
 from models.vqvae import VQVAE
 from scheduler.linear_noise_scheduler import LinearNoiseScheduler
 from utils.text_utils import *
@@ -44,13 +44,13 @@ def cleanup_ddp(is_ddp):
 
 
 def train(args):
+    device, rank, world_size, is_ddp = setup_ddp()
+    is_main = (rank == 0)
+
     from models.lpips import LPIPS
 
     lpips_loss_fn = LPIPS().to(device)
     lpips_loss_fn.eval()
-
-    device, rank, world_size, is_ddp = setup_ddp()
-    is_main = (rank == 0)
 
     # Read the config file #
     with open(args.config_path, 'r') as file:
@@ -140,9 +140,10 @@ def train(args):
     # Instantiate the unet model
     in_channels = autoencoder_model_config['z_channels']
     if 'image' in condition_types:
-        in_channels *= 2  # noisy + source
-
+        # Translation-style input: [x_t, cond_latent]
+        in_channels *= 2
     model = Unet(im_channels=in_channels,
+                out_channels=autoencoder_model_config['z_channels'],
                 model_config=diffusion_model_config).to(device)
 
     model.train()
@@ -285,14 +286,13 @@ def train(args):
                 with torch.no_grad():
                     im, _ = vae.encode(im)
 
-            # ===== NEW: encode source image to latent =====
+            # Encode source image latent for translation-style concatenation
             source_latent = None
             if 'image' in condition_types:
                 with torch.no_grad():
                     source_img = cond_input['image'].to(device, non_blocking=True)
                     source_latent, _ = vae.encode(source_img)
-                cond_input['image_latent'] = source_latent  # optional
-                    
+
             ########### Handling Conditional Input ###########
             if 'text' in condition_types:
                 with torch.no_grad():
@@ -351,12 +351,10 @@ def train(args):
             # Add noise to images according to timestep
             noisy_im = scheduler.add_noise(im, noise, t)
             with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
-                # ===== NEW: concat source latent =====
                 if source_latent is not None:
                     model_input = torch.cat([noisy_im, source_latent], dim=1)
                 else:
                     model_input = noisy_im
-
                 noise_pred = model(model_input, t, cond_input=cond_input)
                 loss_diff = criterion(noise_pred, noise)
 
