@@ -29,7 +29,7 @@ ldm_params:
       image_condition_output_channels: 3
       image_condition_h: 256
       image_condition_w: 256
-      cond_drop_prob: 0.1
+      cond_drop_prob: 0.05
     encoder_condition_config:
       encoder_embed_dim: 768              # Phikon ViT-B output dim (same as DINOv2)
       encoder_model_name: 'phikon'        # Use Phikon as feature encoder
@@ -63,7 +63,7 @@ train_params:
   autoencoder_epochs: 20
   num_samples: 8
   num_grid_rows: 4
-  ldm_lr: 0.00002
+  ldm_lr: 0.00005
   autoencoder_lr: 0.00005
   autoencoder_acc_steps: 4
   autoencoder_img_save_steps: 64
@@ -78,5 +78,7 @@ train_params:
   vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
   vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
   lr_scheduler: 'cosine'
-  ldm_lr_min: 0.000001
-  use_amp: True
+  ldm_lr_min: 0
+  ema_decay: 0.9999
+  grad_clip: 1.0
+  use_amp: True                        # BF16 mixed precision on RTX 4090

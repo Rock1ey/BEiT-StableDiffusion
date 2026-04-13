@@ -146,7 +146,7 @@ class Unet(nn.Module):
         if self.image_cond:
             ######## Mask Conditioning ########
             validate_image_conditional_input(cond_input, x)
-            im_cond = cond_input['image']
+            im_cond = cond_input['image'] * 0.5
             im_cond = torch.nn.functional.interpolate(im_cond, size=x.shape[-2:])
             im_cond = self.cond_conv_in(im_cond)
             assert im_cond.shape[-2:] == x.shape[-2:]
