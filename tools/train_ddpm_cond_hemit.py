@@ -49,9 +49,6 @@ def train(args):
 
     from models.lpips import LPIPS
 
-    lpips_loss_fn = LPIPS().to(device)
-    lpips_loss_fn.eval()
-
     # Read the config file #
     with open(args.config_path, 'r') as file:
         try:
@@ -67,6 +64,15 @@ def train(args):
     diffusion_model_config = config['ldm_params']
     autoencoder_model_config = config['autoencoder_params']
     train_config = config['train_params']
+
+    lambda_l1 = get_config_value(train_config, 'lambda_l1', 0.5)
+    lambda_lpips = get_config_value(train_config, 'lambda_lpips', 0.1)
+    lpips_every = max(1, get_config_value(train_config, 'lpips_every', 1))
+    micro_batch_size = get_config_value(train_config, 'ldm_micro_batch_size', 0)
+    lpips_loss_fn = None
+    if lambda_lpips > 0:
+        lpips_loss_fn = LPIPS().to(device)
+        lpips_loss_fn.eval()
     
     ########## Create the noise scheduler #############
     scheduler = LinearNoiseScheduler(num_timesteps=diffusion_config['num_timesteps'],
@@ -148,8 +154,9 @@ def train(args):
 
     model.train()
 
-    # torch.compile for faster training
-    model = torch.compile(model)
+    # torch.compile can increase peak memory on some workloads
+    if get_config_value(train_config, 'use_torch_compile', False):
+        model = torch.compile(model)
 
     # DDP wrap
     if is_ddp:
@@ -274,7 +281,7 @@ def train(args):
         current_lr = optimizer.param_groups[0]['lr']
         epoch_start = time.time()
         losses = []
-        for data in tqdm(data_loader, disable=not is_main):
+        for step_idx, data in enumerate(tqdm(data_loader, disable=not is_main)):
             cond_input = None
             if condition_config is not None:
                 im, cond_input = data
@@ -285,101 +292,116 @@ def train(args):
             if not im_dataset.use_latents:
                 with torch.no_grad():
                     im, _ = vae.encode(im)
+            batch_size = im.shape[0]
+            curr_micro_bs = batch_size if micro_batch_size is None or micro_batch_size <= 0 else min(micro_batch_size, batch_size)
+            step_loss = 0.0
 
-            # Encode source image latent for translation-style concatenation
-            source_latent = None
-            if 'image' in condition_types:
-                with torch.no_grad():
-                    source_img = cond_input['image'].to(device, non_blocking=True)
-                    source_latent, _ = vae.encode(source_img)
+            for mb_start in range(0, batch_size, curr_micro_bs):
+                mb_end = min(mb_start + curr_micro_bs, batch_size)
+                mb = mb_end - mb_start
+                weight = mb / float(batch_size)
+                im_mb = im[mb_start:mb_end]
 
-            ########### Handling Conditional Input ###########
-            if 'text' in condition_types:
-                with torch.no_grad():
-                    assert 'text' in cond_input, 'Conditioning Type Text but no text conditioning input present'
-                    validate_text_config(condition_config)
-                    text_condition = get_text_representation(cond_input['text'],
+                cond_mb = None
+                if cond_input is not None:
+                    cond_mb = {}
+                    for k, v in cond_input.items():
+                        if torch.is_tensor(v):
+                            cond_mb[k] = v[mb_start:mb_end]
+                        elif isinstance(v, list):
+                            cond_mb[k] = v[mb_start:mb_end]
+                        elif isinstance(v, tuple):
+                            cond_mb[k] = v[mb_start:mb_end]
+                        else:
+                            cond_mb[k] = v
+
+                # Encode source image latent for translation-style concatenation
+                source_latent = None
+                if 'image' in condition_types:
+                    with torch.no_grad():
+                        source_img = cond_mb['image'].to(device, non_blocking=True)
+                        source_latent, _ = vae.encode(source_img)
+
+                ########### Handling Conditional Input ###########
+                if 'text' in condition_types:
+                    with torch.no_grad():
+                        assert 'text' in cond_mb, 'Conditioning Type Text but no text conditioning input present'
+                        validate_text_config(condition_config)
+                        text_condition = get_text_representation(cond_mb['text'],
                                                                  text_tokenizer,
                                                                  text_model,
                                                                  device)
-                    text_drop_prob = get_config_value(condition_config['text_condition_config'],
-                                                      'cond_drop_prob', 0.)
-                    text_condition = drop_text_condition(text_condition, im, empty_text_embed, text_drop_prob)
-                    cond_input['text'] = text_condition
-            if 'image' in condition_types:
-                assert 'image' in cond_input, 'Conditioning Type Image but no image conditioning input present'
-                validate_image_config(condition_config)
-                cond_input_image = cond_input['image'].to(device)
-                # Save original pixel-space image for encoder feature extraction
-                cond_input_image_orig = cond_input_image
-                # Encode condition image to VQVAE latent space (continuous, no quantization)
-                if encode_cond_image:
+                        text_drop_prob = get_config_value(condition_config['text_condition_config'],
+                                                          'cond_drop_prob', 0.)
+                        text_condition = drop_text_condition(text_condition, im_mb, empty_text_embed, text_drop_prob)
+                        cond_mb['text'] = text_condition
+                if 'image' in condition_types:
+                    assert 'image' in cond_mb, 'Conditioning Type Image but no image conditioning input present'
+                    validate_image_config(condition_config)
+                    cond_input_image = cond_mb['image'].to(device)
+                    # Save original pixel-space image for encoder feature extraction
+                    cond_input_image_orig = cond_input_image
+                    # Encode condition image to VQVAE latent space (continuous, no quantization)
+                    if encode_cond_image:
+                        with torch.no_grad():
+                            cond_input_image = vae.encode_pre_quantize(cond_input_image)
+                    # Drop condition
+                    im_drop_prob = get_config_value(condition_config['image_condition_config'],
+                                                          'cond_drop_prob', 0.)
+                    cond_mb['image'] = drop_image_condition(cond_input_image, im_mb, im_drop_prob)
+                if 'encoder' in condition_types:
                     with torch.no_grad():
-                        cond_input_image = vae.encode_pre_quantize(cond_input_image)
-                # Drop condition
-                im_drop_prob = get_config_value(condition_config['image_condition_config'],
-                                                      'cond_drop_prob', 0.)
-                cond_input['image'] = drop_image_condition(cond_input_image, im, im_drop_prob)
-            if 'encoder' in condition_types:
-                with torch.no_grad():
-                    assert 'image' in cond_input, 'Encoder conditioning requires image condition input'
-                    # Use ORIGINAL pixel-space condition image for feature extraction
-                    encoder_input = cond_input_image_orig if 'image' in condition_types else cond_input['image'].to(device)
-                    encoder_features = encoder_extract_fn(encoder_input, encoder_model, device)
-                    encoder_drop_prob = get_config_value(condition_config['encoder_condition_config'],
-                                                      'cond_drop_prob', 0.)
-                    encoder_features = drop_encoder_condition(encoder_features, im, encoder_drop_prob)
-                    cond_input['encoder'] = encoder_features
-            if 'class' in condition_types:
-                assert 'class' in cond_input, 'Conditioning Type Class but no class conditioning input present'
-                validate_class_config(condition_config)
-                class_condition = torch.nn.functional.one_hot(
-                    cond_input['class'],
-                    condition_config['class_condition_config']['num_classes']).to(device)
-                class_drop_prob = get_config_value(condition_config['class_condition_config'],
-                                                   'cond_drop_prob', 0.)
-                # Drop condition
-                cond_input['class'] = drop_class_condition(class_condition, class_drop_prob, im)
-            ################################################
-            
-            # Sample random noise
-            noise = torch.randn_like(im).to(device)
-            
-            # Sample timestep
-            t = torch.randint(0, diffusion_config['num_timesteps'], (im.shape[0],)).to(device)
-            
-            # Add noise to images according to timestep
-            noisy_im = scheduler.add_noise(im, noise, t)
-            with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
-                if source_latent is not None:
-                    model_input = torch.cat([noisy_im, source_latent], dim=1)
-                else:
-                    model_input = noisy_im
-                noise_pred = model(model_input, t, cond_input=cond_input)
-                loss_diff = criterion(noise_pred, noise)
+                        assert 'image' in cond_mb, 'Encoder conditioning requires image condition input'
+                        # Use ORIGINAL pixel-space condition image for feature extraction
+                        encoder_input = cond_input_image_orig if 'image' in condition_types else cond_mb['image'].to(device)
+                        encoder_features = encoder_extract_fn(encoder_input, encoder_model, device)
+                        encoder_drop_prob = get_config_value(condition_config['encoder_condition_config'],
+                                                          'cond_drop_prob', 0.)
+                        encoder_features = drop_encoder_condition(encoder_features, im_mb, encoder_drop_prob)
+                        cond_mb['encoder'] = encoder_features
+                if 'class' in condition_types:
+                    assert 'class' in cond_mb, 'Conditioning Type Class but no class conditioning input present'
+                    validate_class_config(condition_config)
+                    class_condition = torch.nn.functional.one_hot(
+                        cond_mb['class'],
+                        condition_config['class_condition_config']['num_classes']).to(device)
+                    class_drop_prob = get_config_value(condition_config['class_condition_config'],
+                                                       'cond_drop_prob', 0.)
+                    # Drop condition
+                    cond_mb['class'] = drop_class_condition(class_condition, class_drop_prob, im_mb)
+                ################################################
 
-                # ===== NEW: reconstruct x0 =====
-                x0_pred = scheduler.predict_start_from_noise(noisy_im, noise_pred, t)
+                # Sample random noise
+                noise = torch.randn_like(im_mb).to(device)
 
-                # L1 loss (latent space)
-                loss_l1 = torch.nn.functional.l1_loss(x0_pred, im)
+                # Sample timestep
+                t = torch.randint(0, diffusion_config['num_timesteps'], (im_mb.shape[0],)).to(device)
 
-                # weight（可以放config，这里先写死安全）
-                lambda_l1 = 0.5
+                # Add noise to images according to timestep
+                noisy_im = scheduler.add_noise(im_mb, noise, t)
+                with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+                    if source_latent is not None:
+                        model_input = torch.cat([noisy_im, source_latent], dim=1)
+                    else:
+                        model_input = noisy_im
+                    noise_pred = model(model_input, t, cond_input=cond_mb)
+                    loss_diff = criterion(noise_pred, noise)
 
-                # ===== decode for LPIPS =====
-                x0_img = vae.decode(x0_pred)
+                    x0_pred = scheduler.predict_start_from_noise(noisy_im, noise_pred, t)
+                    loss_l1 = torch.nn.functional.l1_loss(x0_pred, im_mb)
+                    loss = loss_diff + lambda_l1 * loss_l1
 
-                with torch.no_grad():
-                    gt_img = vae.decode(im)
+                    if lpips_loss_fn is not None and (step_idx % lpips_every == 0):
+                        x0_img = vae.decode(x0_pred)
+                        with torch.no_grad():
+                            gt_img = vae.decode(im_mb)
+                        loss_lpips = lpips_loss_fn(x0_img, gt_img).mean()
+                        loss = loss + lambda_lpips * loss_lpips
 
-                loss_lpips = lpips_loss_fn(x0_img, gt_img).mean()
+                (loss * weight).backward()
+                step_loss += loss.item() * weight
 
-                lambda_lpips = 0.1
-
-                loss = loss_diff + lambda_l1 * loss_l1 + lambda_lpips * loss_lpips
-            losses.append(loss.item())
-            loss.backward()
+            losses.append(step_loss)
             # Gradient clipping
             if grad_clip > 0:
                 raw_model = model.module if hasattr(model, 'module') else model
