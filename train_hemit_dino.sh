@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # HEMIT DINOv2+LDM Training (DDP, 2x RTX 4090)
-# Usage: tmux new -s dino && bash train_hemit_dino.sh 2>&1 | tee train_dino.log
+# Usage: bash train_hemit_dino.sh
 # =============================================================================
 set -e
 
@@ -58,3 +58,9 @@ echo ""
 echo "=============================================="
 echo "  Training complete: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=============================================="
+
+# # 3. 训练完成后推理（自动使用 EMA 权重）
+# python -m tools.sample_ddpm_hemit --config config/hemit_dino.yaml --full-image --num-samples 9
+
+# # 4. 评估
+# python -m tools.evaluate_hemit --config config/hemit_dino.yaml

@@ -201,20 +201,20 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
 
     num_samples = train_config['num_samples']
 
+    # Step 1: 预处理所有图片patch，生成全局任务队列
+    image_buffers = []  # [(output_sum, weight_sum, orig_h, orig_w, basename)]
+    global_tasks = []   # [(img_idx, patch_idx, yi, xi, cond_dict, uncond_dict)]
     for img_idx, input_path in enumerate(input_paths):
         if img_idx >= num_samples:
             break
-
-        # Load full-resolution input image
         input_im = Image.open(input_path).convert('RGB')
         orig_w, orig_h = input_im.size
-        input_tensor = TF.to_tensor(input_im) * 2 - 1  # [3, H, W] in [-1, 1]
+        input_tensor = TF.to_tensor(input_im) * 2 - 1
         input_im.close()
-
         C = 3
         output_sum = torch.zeros(C, orig_h, orig_w)
         weight_sum = torch.zeros(1, orig_h, orig_w)
-
+        basename = os.path.basename(input_path)
         # Compute patch positions
         y_positions = list(range(0, orig_h - patch_size + 1, stride))
         if y_positions[-1] + patch_size < orig_h:
@@ -222,90 +222,83 @@ def sample_full_image(model, scheduler, train_config, diffusion_model_config,
         x_positions = list(range(0, orig_w - patch_size + 1, stride))
         if x_positions[-1] + patch_size < orig_w:
             x_positions.append(orig_w - patch_size)
-
         all_positions = [(yi, xi) for yi in y_positions for xi in x_positions]
-        total_patches = len(all_positions)
-        print(f'[{img_idx+1}/{num_samples}] {orig_h}x{orig_w}, {total_patches} patches, '
-              f'stride={stride}')
-
-        # Pre-extract ALL condition inputs on GPU:0 then store on CPU
-        all_cond_inputs = []
-        all_uncond_inputs = []
-        for (yi, xi) in all_positions:
+        for patch_idx, (yi, xi) in enumerate(all_positions):
             patch = input_tensor[:, yi:yi + patch_size, xi:xi + patch_size].unsqueeze(0)
             ci, ui = _prepare_cond_input(
                 patch, condition_types, encoder_model, encoder_extract_fn,
                 target_device=torch.device('cpu'),
                 vae=vae, encode_cond_image=encode_cond_image)
-            all_cond_inputs.append(ci)
-            all_uncond_inputs.append(ui)
+            global_tasks.append((img_idx, patch_idx, yi, xi, ci, ui))
+        image_buffers.append({
+            'output_sum': output_sum,
+            'weight_sum': weight_sum,
+            'orig_h': orig_h,
+            'orig_w': orig_w,
+            'basename': basename,
+            'positions': all_positions
+        })
 
-        # Process in chunks of total_parallel, split across GPUs
-        results = [None] * total_patches
+    total_patches = len(global_tasks)
+    print(f'Global patch queue: {total_patches} patches from {len(image_buffers)} images')
 
-        def _process_batch_on_gpu(patch_indices, gpu_device):
-            """Process a batch of patches on one GPU."""
-            if not patch_indices:
-                return
-            gpu_model = gpu_models[gpu_device]
-            gpu_vae = gpu_vaes[gpu_device]
+    # Step 2: 按 total_parallel 批次跨图推理
+    results = [None] * total_patches
 
-            # Stack conditions into batches
-            ci_batch = {}
-            ui_batch = {}
-            for key in all_cond_inputs[patch_indices[0]]:
-                ci_batch[key] = torch.cat([all_cond_inputs[pi][key] for pi in patch_indices]).to(gpu_device)
-                ui_batch[key] = torch.cat([all_uncond_inputs[pi][key] for pi in patch_indices]).to(gpu_device)
+    def _process_batch_on_gpu(task_indices, gpu_device):
+        if not task_indices:
+            return
+        gpu_model = gpu_models[gpu_device]
+        gpu_vae = gpu_vaes[gpu_device]
+        # Stack batch
+        ci_batch = {}
+        ui_batch = {}
+        for key in global_tasks[task_indices[0]][4]:
+            ci_batch[key] = torch.cat([global_tasks[ti][4][key] for ti in task_indices]).to(gpu_device)
+            ui_batch[key] = torch.cat([global_tasks[ti][5][key] for ti in task_indices]).to(gpu_device)
+        with torch.no_grad():
+            decoded = _sample_patches(
+                gpu_model, scheduler, gpu_vae, ci_batch, ui_batch,
+                diffusion_config, autoencoder_model_config, cf_guidance_scale,
+                patch_size, target_device=gpu_device)
+        decoded_cpu = decoded.cpu()
+        for k, ti in enumerate(task_indices):
+            results[ti] = decoded_cpu[k:k+1]
 
-            with torch.no_grad():
-                decoded = _sample_patches(
-                    gpu_model, scheduler, gpu_vae, ci_batch, ui_batch,
-                    diffusion_config, autoencoder_model_config, cf_guidance_scale,
-                    patch_size, target_device=gpu_device)  # [B, 3, ps, ps]
+    for chunk_start in range(0, total_patches, total_parallel):
+        chunk_indices = list(range(chunk_start, min(chunk_start + total_parallel, total_patches)))
+        if n_gpus == 1:
+            _process_batch_on_gpu(chunk_indices, devices[0])
+        else:
+            per_gpu = len(chunk_indices) // n_gpus
+            remainder = len(chunk_indices) % n_gpus
+            threads = []
+            offset = 0
+            for g in range(n_gpus):
+                count = per_gpu + (1 if g < remainder else 0)
+                gpu_indices = chunk_indices[offset:offset + count]
+                offset += count
+                t = threading.Thread(target=_process_batch_on_gpu,
+                                     args=(gpu_indices, devices[g]))
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+        done = min(chunk_start + total_parallel, total_patches)
+        print(f'  {done}/{total_patches} patches')
 
-            decoded_cpu = decoded.cpu()
-            for k, pi in enumerate(patch_indices):
-                results[pi] = decoded_cpu[k:k+1]
+    # Step 3: 推理结果写回各自图片buffer并保存
+    for ti, (img_idx, patch_idx, yi, xi, _, _) in enumerate(global_tasks):
+        decoded = results[ti].squeeze(0)
+        buf = image_buffers[img_idx]
+        buf['output_sum'][:, yi:yi + patch_size, xi:xi + patch_size] += decoded * gauss_weight_cpu
+        buf['weight_sum'][:, yi:yi + patch_size, xi:xi + patch_size] += gauss_weight_cpu
 
-        for chunk_start in range(0, total_patches, total_parallel):
-            chunk_indices = list(range(chunk_start, min(chunk_start + total_parallel, total_patches)))
-
-            if n_gpus == 1:
-                _process_batch_on_gpu(chunk_indices, devices[0])
-            else:
-                # Split chunk across GPUs
-                per_gpu = len(chunk_indices) // n_gpus
-                remainder = len(chunk_indices) % n_gpus
-                threads = []
-                offset = 0
-                for g in range(n_gpus):
-                    count = per_gpu + (1 if g < remainder else 0)
-                    gpu_indices = chunk_indices[offset:offset + count]
-                    offset += count
-                    t = threading.Thread(target=_process_batch_on_gpu,
-                                         args=(gpu_indices, devices[g]))
-                    threads.append(t)
-                    t.start()
-                for t in threads:
-                    t.join()
-
-            done = min(chunk_start + total_parallel, total_patches)
-            print(f'  {done}/{total_patches} patches')
-
-        # Accumulate results with Gaussian blending
-        for pidx, (yi, xi) in enumerate(all_positions):
-            decoded = results[pidx].squeeze(0)
-            output_sum[:, yi:yi + patch_size, xi:xi + patch_size] += decoded * gauss_weight_cpu
-            weight_sum[:, yi:yi + patch_size, xi:xi + patch_size] += gauss_weight_cpu
-
-        # Normalize by weight
-        output_full = output_sum / weight_sum.clamp(min=1e-8)
+    for buf in image_buffers:
+        output_full = buf['output_sum'] / buf['weight_sum'].clamp(min=1e-8)
         output_full = output_full.clamp(0, 1).cpu()
-
-        # Save individual generated image (needed for evaluation)
-        basename = os.path.basename(input_path)
         out_img = torchvision.transforms.ToPILImage()(output_full)
-        out_img.save(os.path.join(out_dir, 'generated_{}'.format(basename)))
+        out_img.save(os.path.join(out_dir, 'generated_{}'.format(buf['basename'])))
         out_img.close()
 
     print('Saved full-resolution samples to {}'.format(out_dir))
