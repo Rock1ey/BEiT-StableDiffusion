@@ -60,7 +60,7 @@ echo "  Training complete: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=============================================="
 
 # # 3. 训练完成后推理（自动使用 EMA 权重）
-# python -m tools.sample_ddpm_hemit --config config/hemit_phikon.yaml --full-image --num-samples 9
+# python -m tools.sample_ddpm_cond_hemit --config config/hemit_phikon.yaml --full-image --num-samples 8
 
 # # 4. 评估
 # python -m tools.evaluate_hemit --config config/hemit_phikon.yaml

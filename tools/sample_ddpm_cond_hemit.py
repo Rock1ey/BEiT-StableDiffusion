@@ -9,7 +9,7 @@ import threading
 from PIL import Image
 from torchvision.utils import make_grid
 from tqdm import tqdm
-from models.unet_cond_base import Unet
+from models.unet_cond_hemit import Unet
 from models.vqvae import VQVAE
 from scheduler.linear_noise_scheduler import LinearNoiseScheduler
 from scheduler.ddim_scheduler import DDIMScheduler
@@ -47,8 +47,11 @@ def _sample_patches(model, scheduler, vae, cond_input, uncond_input,
             batch_size = v.shape[0]
             break
 
-    xt = torch.randn((batch_size, autoencoder_model_config['z_channels'],
+    z_channels = autoencoder_model_config['z_channels']
+    xt = torch.randn((batch_size, z_channels,
                        latent_size, latent_size)).to(dev)
+    cond_latent = cond_input.get('image_latent', None)
+    uncond_latent = uncond_input.get('image_latent', None)
 
     is_ddim = isinstance(scheduler, DDIMScheduler)
 
@@ -56,10 +59,12 @@ def _sample_patches(model, scheduler, vae, cond_input, uncond_input,
         timesteps = scheduler.timesteps
         for t_idx in tqdm(range(len(timesteps)), desc='DDIM Sampling', leave=False):
             t = timesteps[t_idx].expand(batch_size).to(dev)
-            noise_pred_cond = model(xt, t, cond_input)
+            model_input_cond = torch.cat([xt, cond_latent], dim=1) if cond_latent is not None else xt
+            noise_pred_cond = model(model_input_cond, t, cond_input)
 
             if cf_guidance_scale > 1:
-                noise_pred_uncond = model(xt, t, uncond_input)
+                model_input_uncond = torch.cat([xt, uncond_latent], dim=1) if uncond_latent is not None else xt
+                noise_pred_uncond = model(model_input_uncond, t, uncond_input)
                 noise_pred = noise_pred_uncond + cf_guidance_scale * (noise_pred_cond - noise_pred_uncond)
             else:
                 noise_pred = noise_pred_cond
@@ -68,10 +73,12 @@ def _sample_patches(model, scheduler, vae, cond_input, uncond_input,
     else:
         for i in tqdm(range(diffusion_config['num_timesteps'] - 1, -1, -1), desc='DDPM Sampling', leave=False):
             t = torch.full((batch_size,), i, dtype=torch.long, device=dev)
-            noise_pred_cond = model(xt, t, cond_input)
+            model_input_cond = torch.cat([xt, cond_latent], dim=1) if cond_latent is not None else xt
+            noise_pred_cond = model(model_input_cond, t, cond_input)
 
             if cf_guidance_scale > 1:
-                noise_pred_uncond = model(xt, t, uncond_input)
+                model_input_uncond = torch.cat([xt, uncond_latent], dim=1) if uncond_latent is not None else xt
+                noise_pred_uncond = model(model_input_uncond, t, uncond_input)
                 noise_pred = noise_pred_uncond + cf_guidance_scale * (noise_pred_cond - noise_pred_uncond)
             else:
                 noise_pred = noise_pred_cond
@@ -94,6 +101,11 @@ def _prepare_cond_input(cond_patch, condition_types, encoder_model=None, encoder
 
     if 'image' in condition_types:
         cond_image = cond_patch.to(dev)
+        if vae is not None:
+            with torch.no_grad():
+                image_latent, _ = vae.encode(cond_image.to(device))
+            cond_input['image_latent'] = image_latent.to(dev)
+            uncond_input['image_latent'] = torch.zeros_like(cond_input['image_latent'])
         if encode_cond_image and vae is not None:
             with torch.no_grad():
                 # Encode to VQVAE continuous latent (skip quantization for HE images)
@@ -360,7 +372,11 @@ def infer(args):
         print(f'Loaded {encoder_model_name} model for inference')
 
     ########## Load Unet #############
-    model = Unet(im_channels=autoencoder_model_config['z_channels'],
+    in_channels = autoencoder_model_config['z_channels']
+    if 'image' in condition_types:
+        in_channels *= 2
+    model = Unet(im_channels=in_channels,
+                 out_channels=autoencoder_model_config['z_channels'],
                  model_config=diffusion_model_config).to(device)
     model.eval()
     if os.path.exists(os.path.join(train_config['task_name'],
