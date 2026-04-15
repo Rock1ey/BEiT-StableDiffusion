@@ -328,6 +328,8 @@ def infer(args):
     diffusion_model_config = config['ldm_params']
     autoencoder_model_config = config['autoencoder_params']
     train_config = config['train_params']
+    shared_artifact_root = get_config_value(train_config, 'shared_artifact_root',
+                                            train_config['task_name'])
 
     # CLI参数覆盖
     if args.num_samples is not None:
@@ -407,14 +409,14 @@ def infer(args):
     vae = VQVAE(im_channels=dataset_config['im_channels'],
                 model_config=autoencoder_model_config).to(device)
     vae.eval()
-    if os.path.exists(os.path.join(train_config['task_name'],
+    if os.path.exists(os.path.join(shared_artifact_root,
                                    train_config['vqvae_autoencoder_ckpt_name'])):
         print('Loaded vae checkpoint')
-        vae.load_state_dict(torch.load(os.path.join(train_config['task_name'],
+        vae.load_state_dict(torch.load(os.path.join(shared_artifact_root,
                                                     train_config['vqvae_autoencoder_ckpt_name']),
                                        map_location=device, weights_only=True))
     else:
-        raise Exception('VAE checkpoint {} not found'.format(os.path.join(train_config['task_name'],
+        raise Exception('VAE checkpoint {} not found'.format(os.path.join(shared_artifact_root,
                                                                           train_config['vqvae_autoencoder_ckpt_name'])))
 
     ########## Multi-GPU: replicate models to each GPU #############

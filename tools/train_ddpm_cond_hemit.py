@@ -66,6 +66,8 @@ def train(args):
     diffusion_model_config = config['ldm_params']
     autoencoder_model_config = config['autoencoder_params']
     train_config = config['train_params']
+    shared_artifact_root = get_config_value(train_config, 'shared_artifact_root',
+                                            train_config['task_name'])
 
     lambda_l1 = get_config_value(train_config, 'lambda_l1', 0.5)
     lambda_lpips = get_config_value(train_config, 'lambda_lpips', 0.1)
@@ -130,7 +132,7 @@ def train(args):
                                 im_size=dataset_config['im_size'],
                                 im_channels=dataset_config['im_channels'],
                                 use_latents=True,
-                                latent_path=os.path.join(train_config['task_name'],
+                                latent_path=os.path.join(shared_artifact_root,
                                                          train_config['vqvae_latent_dir_name']),
                                 condition_config=condition_config,
                                 **({'patch_mode': use_patches} if dataset_config['name'] == 'hemit' else {}))
@@ -170,7 +172,7 @@ def train(args):
     vae = VQVAE(im_channels=dataset_config['im_channels'],
                 model_config=autoencoder_model_config).to(device)
     vae.eval()
-    vae_ckpt_path = os.path.join(train_config['task_name'],
+    vae_ckpt_path = os.path.join(shared_artifact_root,
                                   train_config['vqvae_autoencoder_ckpt_name'])
     if os.path.exists(vae_ckpt_path):
         if is_main:
