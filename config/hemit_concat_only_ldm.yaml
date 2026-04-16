@@ -23,7 +23,7 @@ ldm_params:
   num_mid_layers: 2
   num_up_layers: 2
   condition_config:
-    condition_types: [ 'image' ]
+    condition_types: [ 'image', 'source_concat' ]
     image_condition_config:
       image_condition_input_channels: 3
       image_condition_output_channels: 3

@@ -99,22 +99,25 @@ def _prepare_cond_input(cond_patch, condition_types, encoder_model=None, encoder
     cond_input = {}
     uncond_input = {}
 
-    if 'image' in condition_types:
+    needs_source = 'image' in condition_types or 'source_concat' in condition_types
+    if needs_source:
         cond_image = cond_patch.to(dev)
         if vae is not None:
             with torch.no_grad():
                 image_latent, _ = vae.encode(cond_image.to(device))
             cond_input['image_latent'] = image_latent.to(dev)
             uncond_input['image_latent'] = torch.zeros_like(cond_input['image_latent'])
-        if encode_cond_image and vae is not None:
-            with torch.no_grad():
-                # Encode to VQVAE continuous latent (skip quantization for HE images)
-                cond_image_encoded = vae.encode_pre_quantize(cond_image.to(device)).to(dev)
-            cond_input['image'] = cond_image_encoded
-            uncond_input['image'] = torch.zeros_like(cond_image_encoded)
-        else:
-            cond_input['image'] = cond_image
-            uncond_input['image'] = torch.zeros_like(cond_image)
+        if 'image' in condition_types:
+            # UNet image-cond: pass pixel-space (or encoded) image into cond_input
+            if encode_cond_image and vae is not None:
+                with torch.no_grad():
+                    # Encode to VQVAE continuous latent (skip quantization for HE images)
+                    cond_image_encoded = vae.encode_pre_quantize(cond_image.to(device)).to(dev)
+                cond_input['image'] = cond_image_encoded
+                uncond_input['image'] = torch.zeros_like(cond_image_encoded)
+            else:
+                cond_input['image'] = cond_image
+                uncond_input['image'] = torch.zeros_like(cond_image)
 
     if 'encoder' in condition_types:
         with torch.no_grad():

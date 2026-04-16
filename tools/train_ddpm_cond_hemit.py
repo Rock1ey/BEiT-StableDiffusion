@@ -90,6 +90,8 @@ def train(args):
     empty_text_embed = None
     encoder_model = None
     encoder_extract_fn = None
+    encoder_feature_path = None
+    use_cached_encoder = False
     condition_types = []
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
     if condition_config is not None:
@@ -106,12 +108,25 @@ def train(args):
                 empty_text_embed = get_text_representation([''], text_tokenizer, text_model, device)
         if 'encoder' in condition_types:
             validate_encoder_config(condition_config)
-            from utils.encoder_utils import get_feature_extractor
             encoder_model_name = get_config_value(
                 condition_config['encoder_condition_config'], 'encoder_model_name', 'dinov2')
-            encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
-            if is_main:
-                print(f'Loaded {encoder_model_name} model for cross-attention conditioning')
+            # Determine encoder feature cache path
+            encoder_feature_dir_name = get_config_value(
+                train_config, 'encoder_feature_dir_name',
+                '{}_features'.format(encoder_model_name))
+            encoder_feature_path = os.path.join(
+                shared_artifact_root, encoder_feature_dir_name, 'train_features.pkl')
+            use_cached_encoder = os.path.exists(encoder_feature_path)
+            if use_cached_encoder:
+                if is_main:
+                    print('Found cached encoder features: {}'.format(encoder_feature_path))
+                encoder_model = None
+                encoder_extract_fn = None
+            else:
+                from utils.encoder_utils import get_feature_extractor
+                encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
+                if is_main:
+                    print('Loaded {} model for cross-attention conditioning'.format(encoder_model_name))
 
     # Check if condition images should be encoded via VQVAE
     encode_cond_image = False
@@ -135,6 +150,7 @@ def train(args):
                                 latent_path=os.path.join(shared_artifact_root,
                                                          train_config['vqvae_latent_dir_name']),
                                 condition_config=condition_config,
+                                encoder_feature_path=encoder_feature_path if ('encoder' in condition_types and use_cached_encoder) else None,
                                 **({'patch_mode': use_patches} if dataset_config['name'] == 'hemit' else {}))
 
     # DDP: use DistributedSampler; otherwise shuffle
@@ -149,8 +165,8 @@ def train(args):
     
     # Instantiate the unet model
     in_channels = autoencoder_model_config['z_channels']
-    if 'image' in condition_types:
-        # Translation-style input: [x_t, cond_latent]
+    if 'source_concat' in condition_types:
+        # source-concat: [x_t, source_latent] concatenated at input — doubles channels
         in_channels *= 2
     model = Unet(im_channels=in_channels,
                 out_channels=autoencoder_model_config['z_channels'],
@@ -321,7 +337,7 @@ def train(args):
 
                 # Encode source image latent for translation-style concatenation
                 source_latent = None
-                if 'image' in condition_types:
+                if 'source_concat' in condition_types:
                     with torch.no_grad():
                         source_img = cond_mb['image'].to(device, non_blocking=True)
                         source_latent, _ = vae.encode(source_img)
@@ -354,15 +370,19 @@ def train(args):
                                                           'cond_drop_prob', 0.)
                     cond_mb['image'] = drop_image_condition(cond_input_image, im_mb, im_drop_prob)
                 if 'encoder' in condition_types:
-                    with torch.no_grad():
-                        assert 'image' in cond_mb, 'Encoder conditioning requires image condition input'
-                        # Use ORIGINAL pixel-space condition image for feature extraction
-                        encoder_input = cond_input_image_orig if 'image' in condition_types else cond_mb['image'].to(device)
-                        encoder_features = encoder_extract_fn(encoder_input, encoder_model, device)
-                        encoder_drop_prob = get_config_value(condition_config['encoder_condition_config'],
-                                                          'cond_drop_prob', 0.)
-                        encoder_features = drop_encoder_condition(encoder_features, im_mb, encoder_drop_prob)
-                        cond_mb['encoder'] = encoder_features
+                    encoder_drop_prob = get_config_value(condition_config['encoder_condition_config'],
+                                                      'cond_drop_prob', 0.)
+                    if 'encoder' in cond_mb:
+                        # Pre-cached features loaded by dataset — move to device and apply CFG dropout
+                        encoder_features = cond_mb['encoder'].to(device, non_blocking=True)
+                    else:
+                        # On-the-fly extraction via encoder model
+                        with torch.no_grad():
+                            assert 'image' in cond_mb, 'Encoder conditioning requires image condition input'
+                            encoder_input = cond_input_image_orig if 'image' in condition_types else cond_mb['image'].to(device)
+                            encoder_features = encoder_extract_fn(encoder_input, encoder_model, device)
+                    encoder_features = drop_encoder_condition(encoder_features, im_mb, encoder_drop_prob)
+                    cond_mb['encoder'] = encoder_features
                 if 'class' in condition_types:
                     assert 'class' in cond_mb, 'Conditioning Type Class but no class conditioning input present'
                     validate_class_config(condition_config)

@@ -41,6 +41,26 @@ def load_latents(latent_path):
     return latent_maps
 
 
+def load_encoder_features(feature_path):
+    """
+    Load pre-cached encoder features from a single pkl file.
+
+    The file is expected to be a dict: {latent_key: Tensor[N, D]}
+    where keys match the format used by HemitDataset.get_latent_key().
+
+    Args:
+        feature_path: Full path to a <split>_features.pkl file.
+
+    Returns:
+        dict mapping latent_key -> Tensor[N, D], or {} if file not found.
+    """
+    if not os.path.exists(feature_path):
+        return {}
+    with open(feature_path, 'rb') as f:
+        feature_maps = pickle.load(f)
+    return feature_maps
+
+
 def drop_text_condition(text_embed, im, empty_text_embed, text_drop_prob):
     if text_drop_prob > 0:
         text_drop_mask = torch.zeros((im.shape[0]), device=im.device).float().uniform_(0,

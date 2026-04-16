@@ -6,7 +6,7 @@ import torchvision
 import torchvision.transforms.functional as TF
 from PIL import Image
 from tqdm import tqdm
-from utils.diffusion_utils import load_latents
+from utils.diffusion_utils import load_latents, load_encoder_features
 from torch.utils.data.dataset import Dataset
 
 
@@ -25,7 +25,7 @@ class HemitDataset(Dataset):
 
     def __init__(self, split, im_path, im_size=256, im_channels=3,
                  use_latents=False, latent_path=None, condition_config=None,
-                 patch_mode='none'):
+                 patch_mode='none', encoder_feature_path=None):
         self.split = split
         self.im_size = im_size
         self.im_channels = im_channels
@@ -34,6 +34,7 @@ class HemitDataset(Dataset):
         self.use_latents = False
         self.patch_mode = patch_mode
         self.use_precut = False
+        self.encoder_feature_maps = None
 
         self.condition_types = [] if condition_config is None else condition_config['condition_types']
 
@@ -60,6 +61,20 @@ class HemitDataset(Dataset):
                 print('Found {} latents'.format(len(self.latent_maps)))
             else:
                 print('Latents not found (expected {}, got {})'.format(expected_len, len(latent_maps)))
+
+        # Load pre-cached encoder features if provided (extends, not replaces, on-the-fly extraction)
+        if encoder_feature_path is not None:
+            feature_maps = load_encoder_features(encoder_feature_path)
+            expected_len = len(self.patch_keys) if self.patch_mode == 'grid' else len(self.images)
+            if len(feature_maps) == expected_len:
+                self.encoder_feature_maps = feature_maps
+                print('Found {} cached encoder features'.format(len(self.encoder_feature_maps)))
+            elif len(feature_maps) > 0:
+                print('Encoder feature count mismatch (expected {}, got {}). '
+                      'Falling back to on-the-fly extraction.'.format(expected_len, len(feature_maps)))
+            else:
+                print('Encoder feature file not found at {}. '
+                      'Falling back to on-the-fly extraction.'.format(encoder_feature_path))
 
     def _build_grid_index(self):
         """Expand dataset so each grid patch is a separate sample."""
@@ -236,14 +251,17 @@ class HemitDataset(Dataset):
         """Grid mode: fixed patch from expanded index."""
         y, x = self.patch_positions[index]
         cond_inputs = {}
+        needs_source = 'image' in self.condition_types or 'source_concat' in self.condition_types
 
         if self.use_latents:
             latent = self.latent_maps[self.patch_keys[index]]
-            if 'image' in self.condition_types:
+            if needs_source:
                 if self.use_precut:
                     cond_inputs['image'] = self._load_precut_patch(self.precut_input_paths[index])
                 else:
                     cond_inputs['image'] = self._load_grid_patch(self.inputs[index], y, x)
+            if self.encoder_feature_maps is not None:
+                cond_inputs['encoder'] = self.encoder_feature_maps[self.patch_keys[index]]
             if len(self.condition_types) == 0:
                 return latent
             return latent, cond_inputs
@@ -252,11 +270,13 @@ class HemitDataset(Dataset):
                 label_tensor = self._load_precut_patch(self.precut_label_paths[index])
             else:
                 label_tensor = self._load_grid_patch(self.images[index], y, x)
-            if 'image' in self.condition_types:
+            if needs_source:
                 if self.use_precut:
                     cond_inputs['image'] = self._load_precut_patch(self.precut_input_paths[index])
                 else:
                     cond_inputs['image'] = self._load_grid_patch(self.inputs[index], y, x)
+            if self.encoder_feature_maps is not None:
+                cond_inputs['encoder'] = self.encoder_feature_maps[self.patch_keys[index]]
             if len(self.condition_types) == 0:
                 return label_tensor
             return label_tensor, cond_inputs
@@ -266,8 +286,9 @@ class HemitDataset(Dataset):
         label_tensor, input_tensor = self._load_random_patches(
             self.images[index], self.inputs[index])
         cond_inputs = {}
-        if 'image' in self.condition_types:
+        if 'image' in self.condition_types or 'source_concat' in self.condition_types:
             cond_inputs['image'] = input_tensor
+        # Note: encoder features are NOT pre-cached for random crop mode (non-deterministic patches)
         if len(self.condition_types) == 0:
             return label_tensor
         return label_tensor, cond_inputs
@@ -275,8 +296,10 @@ class HemitDataset(Dataset):
     def _getitem_resize(self, index):
         """Original resize mode."""
         cond_inputs = {}
-        if 'image' in self.condition_types:
+        if 'image' in self.condition_types or 'source_concat' in self.condition_types:
             cond_inputs['image'] = self._load_and_transform(self.inputs[index])
+        if self.encoder_feature_maps is not None:
+            cond_inputs['encoder'] = self.encoder_feature_maps[self.images[index]]
 
         if self.use_latents:
             latent = self.latent_maps[self.images[index]]
