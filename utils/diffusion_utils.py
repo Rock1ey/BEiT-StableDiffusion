@@ -43,17 +43,36 @@ def load_latents(latent_path):
 
 def load_encoder_features(feature_path):
     """
-    Load pre-cached encoder features from a single pkl file.
+    Load pre-cached encoder features. Supports two formats:
 
-    The file is expected to be a dict: {latent_key: Tensor[N, D]}
-    where keys match the format used by HemitDataset.get_latent_key().
+    1. Sharded (new): train_features_0000.pkl, train_features_0001.pkl, ...
+       Detected by globbing <dir>/<split>_features_*.pkl
+       Features are stored as float16 (Tensor[N, D]).
+
+    2. Legacy single file: train_features.pkl
+       Detected if the sharded pattern matches nothing but the single file exists.
 
     Args:
-        feature_path: Full path to a <split>_features.pkl file.
+        feature_path: Path to <split>_features.pkl (used as the base for glob pattern).
 
     Returns:
-        dict mapping latent_key -> Tensor[N, D], or {} if file not found.
+        dict mapping latent_key -> Tensor[N, D] (float16 from cache), or {} if not found.
     """
+    feature_dir = os.path.dirname(feature_path)
+    split_prefix = os.path.splitext(os.path.basename(feature_path))[0]  # e.g. "train_features"
+
+    # Try sharded format first: train_features_0000.pkl, train_features_0001.pkl, ...
+    sharded_files = sorted(glob.glob(
+        os.path.join(feature_dir, '{}_[0-9]*.pkl'.format(split_prefix))))
+    if sharded_files:
+        feature_maps = {}
+        for fname in sharded_files:
+            with open(fname, 'rb') as f:
+                shard = pickle.load(f)
+            feature_maps.update(shard)
+        return feature_maps
+
+    # Fall back to legacy single file
     if not os.path.exists(feature_path):
         return {}
     with open(feature_path, 'rb') as f:

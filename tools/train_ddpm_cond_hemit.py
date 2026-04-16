@@ -373,8 +373,8 @@ def train(args):
                     encoder_drop_prob = get_config_value(condition_config['encoder_condition_config'],
                                                       'cond_drop_prob', 0.)
                     if 'encoder' in cond_mb:
-                        # Pre-cached features loaded by dataset — move to device and apply CFG dropout
-                        encoder_features = cond_mb['encoder'].to(device, non_blocking=True)
+                        # Pre-cached features loaded by dataset (float16) — move to device as float32
+                        encoder_features = cond_mb['encoder'].to(device=device, dtype=torch.float32, non_blocking=True)
                     else:
                         # On-the-fly extraction via encoder model
                         with torch.no_grad():
