@@ -114,12 +114,22 @@ def train(args):
             encoder_feature_dir_name = get_config_value(
                 train_config, 'encoder_feature_dir_name',
                 '{}_features'.format(encoder_model_name))
-            encoder_feature_path = os.path.join(
-                shared_artifact_root, encoder_feature_dir_name, 'train_features.pkl')
-            use_cached_encoder = os.path.exists(encoder_feature_path)
+            encoder_feature_dir = os.path.join(shared_artifact_root, encoder_feature_dir_name)
+            # encoder_feature_path is the canonical base path (used by load_encoder_features,
+            # which internally globs for sharded files train_features_*.pkl or falls back to
+            # the single-file train_features.pkl)
+            encoder_feature_path = os.path.join(encoder_feature_dir, 'train_features.pkl')
+            # Detect either sharded format (train_features_0000.pkl, ...) or legacy single file
+            import glob as _glob
+            _sharded = _glob.glob(os.path.join(encoder_feature_dir, 'train_features_[0-9]*.pkl'))
+            use_cached_encoder = bool(_sharded) or os.path.exists(encoder_feature_path)
             if use_cached_encoder:
                 if is_main:
-                    print('Found cached encoder features: {}'.format(encoder_feature_path))
+                    if _sharded:
+                        print('Found cached encoder features: {} shard(s) in {}'.format(
+                            len(_sharded), encoder_feature_dir))
+                    else:
+                        print('Found cached encoder features: {}'.format(encoder_feature_path))
                 encoder_model = None
                 encoder_extract_fn = None
             else:
