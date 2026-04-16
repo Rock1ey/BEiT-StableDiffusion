@@ -141,7 +141,7 @@ def cache_encoder_features(args):
 
             for b in range(features.shape[0]):
                 key = dataset.get_latent_key(global_idx)
-                current_shard[key] = features[b]  # Tensor[N, D] float16
+                current_shard[key] = features[b].clone()  # Tensor[N, D] float16, own storage
                 global_idx += 1
 
             # Flush shard when it reaches shard_size
