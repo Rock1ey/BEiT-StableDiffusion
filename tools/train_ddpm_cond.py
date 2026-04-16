@@ -139,8 +139,10 @@ def train(args):
                  model_config=diffusion_model_config).to(device)
     model.train()
 
-    # torch.compile for faster training
-    model = torch.compile(model)
+    # torch.compile for faster training; suppress_errors lets DDP submodule
+    # recompilations fall back to eager instead of crashing on symbolic sizes.
+    torch._dynamo.config.suppress_errors = True
+    model = torch.compile(model, dynamic=True)
 
     # DDP wrap
     if is_ddp:

@@ -34,6 +34,7 @@ ldm_params:
       encoder_embed_dim: 768              # Phikon ViT-B output dim (same as DINOv2)
       encoder_model_name: 'phikon'        # Use Phikon as feature encoder
       cond_drop_prob: 0.05              # CFG dropout for encoder features
+      use_encoder_cache: false          # false = on-the-fly extraction, true = use pre-cached features
 
 autoencoder_params:
   z_channels: 4

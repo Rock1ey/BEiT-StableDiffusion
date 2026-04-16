@@ -110,33 +110,44 @@ def train(args):
             validate_encoder_config(condition_config)
             encoder_model_name = get_config_value(
                 condition_config['encoder_condition_config'], 'encoder_model_name', 'dinov2')
-            # Determine encoder feature cache path
-            encoder_feature_dir_name = get_config_value(
-                train_config, 'encoder_feature_dir_name',
-                '{}_features'.format(encoder_model_name))
-            encoder_feature_dir = os.path.join(shared_artifact_root, encoder_feature_dir_name)
-            # encoder_feature_path is the canonical base path (used by load_encoder_features,
-            # which internally globs for sharded files train_features_*.pkl or falls back to
-            # the single-file train_features.pkl)
-            encoder_feature_path = os.path.join(encoder_feature_dir, 'train_features.pkl')
-            # Detect either sharded format (train_features_0000.pkl, ...) or legacy single file
-            import glob as _glob
-            _sharded = _glob.glob(os.path.join(encoder_feature_dir, 'train_features_[0-9]*.pkl'))
-            use_cached_encoder = bool(_sharded) or os.path.exists(encoder_feature_path)
-            if use_cached_encoder:
-                if is_main:
-                    if _sharded:
-                        print('Found cached encoder features: {} shard(s) in {}'.format(
-                            len(_sharded), encoder_feature_dir))
-                    else:
-                        print('Found cached encoder features: {}'.format(encoder_feature_path))
-                encoder_model = None
-                encoder_extract_fn = None
+            use_encoder_cache = get_config_value(
+                condition_config['encoder_condition_config'], 'use_encoder_cache', True)
+            if use_encoder_cache:
+                # Determine encoder feature cache path
+                encoder_feature_dir_name = get_config_value(
+                    train_config, 'encoder_feature_dir_name',
+                    '{}_features'.format(encoder_model_name))
+                encoder_feature_dir = os.path.join(shared_artifact_root, encoder_feature_dir_name)
+                # encoder_feature_path is the canonical base path (used by load_encoder_features,
+                # which internally globs for sharded files train_features_*.pkl or falls back to
+                # the single-file train_features.pkl)
+                encoder_feature_path = os.path.join(encoder_feature_dir, 'train_features.pkl')
+                # Detect either sharded format (train_features_0000.pkl, ...) or legacy single file
+                import glob as _glob
+                _sharded = _glob.glob(os.path.join(encoder_feature_dir, 'train_features_[0-9]*.pkl'))
+                use_cached_encoder = bool(_sharded) or os.path.exists(encoder_feature_path)
+                if use_cached_encoder:
+                    if is_main:
+                        if _sharded:
+                            print('Found cached encoder features: {} shard(s) in {}'.format(
+                                len(_sharded), encoder_feature_dir))
+                        else:
+                            print('Found cached encoder features: {}'.format(encoder_feature_path))
+                    encoder_model = None
+                    encoder_extract_fn = None
+                else:
+                    from utils.encoder_utils import get_feature_extractor
+                    encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
+                    if is_main:
+                        print('Loaded {} model for cross-attention conditioning'.format(encoder_model_name))
             else:
+                # use_encoder_cache: false — always extract on-the-fly, ignore any cached files
+                use_cached_encoder = False
+                encoder_feature_path = None
                 from utils.encoder_utils import get_feature_extractor
                 encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
                 if is_main:
-                    print('Loaded {} model for cross-attention conditioning'.format(encoder_model_name))
+                    print('Loaded {} model for on-the-fly conditioning (cache disabled)'.format(encoder_model_name))
 
     # Check if condition images should be encoded via VQVAE
     encode_cond_image = False
@@ -186,6 +197,10 @@ def train(args):
 
     # torch.compile can increase peak memory on some workloads
     if get_config_value(train_config, 'use_torch_compile', False):
+        # suppress_errors: DDP splits the graph into submodules that are recompiled
+        # independently; symbolic-size errors in those submodules would crash training.
+        # With suppress_errors=True those submodules fall back to eager automatically.
+        torch._dynamo.config.suppress_errors = True
         model = torch.compile(model, dynamic=True)
 
     # DDP wrap
