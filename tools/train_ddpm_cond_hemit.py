@@ -186,7 +186,7 @@ def train(args):
 
     # torch.compile can increase peak memory on some workloads
     if get_config_value(train_config, 'use_torch_compile', False):
-        model = torch.compile(model)
+        model = torch.compile(model, dynamic=True)
 
     # DDP wrap
     if is_ddp:
