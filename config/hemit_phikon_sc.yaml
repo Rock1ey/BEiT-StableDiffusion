@@ -46,7 +46,7 @@ train_params:
   seed: 1111
   task_name: 'hemit_phikon_sc'
   shared_artifact_root: 'hemit_shared_artifacts'
-  ldm_batch_size: 48
+  ldm_batch_size: 64
   ldm_micro_batch_size: 0
   autoencoder_batch_size: 8
   disc_start: 5000
