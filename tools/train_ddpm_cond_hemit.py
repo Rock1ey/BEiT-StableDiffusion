@@ -90,8 +90,6 @@ def train(args):
     empty_text_embed = None
     encoder_model = None
     encoder_extract_fn = None
-    encoder_feature_path = None
-    use_cached_encoder = False
     condition_types = []
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
     if condition_config is not None:
@@ -110,44 +108,10 @@ def train(args):
             validate_encoder_config(condition_config)
             encoder_model_name = get_config_value(
                 condition_config['encoder_condition_config'], 'encoder_model_name', 'dinov2')
-            use_encoder_cache = get_config_value(
-                condition_config['encoder_condition_config'], 'use_encoder_cache', True)
-            if use_encoder_cache:
-                # Determine encoder feature cache path
-                encoder_feature_dir_name = get_config_value(
-                    train_config, 'encoder_feature_dir_name',
-                    '{}_features'.format(encoder_model_name))
-                encoder_feature_dir = os.path.join(shared_artifact_root, encoder_feature_dir_name)
-                # encoder_feature_path is the canonical base path (used by load_encoder_features,
-                # which internally globs for sharded files train_features_*.pkl or falls back to
-                # the single-file train_features.pkl)
-                encoder_feature_path = os.path.join(encoder_feature_dir, 'train_features.pkl')
-                # Detect either sharded format (train_features_0000.pkl, ...) or legacy single file
-                import glob as _glob
-                _sharded = _glob.glob(os.path.join(encoder_feature_dir, 'train_features_[0-9]*.pkl'))
-                use_cached_encoder = bool(_sharded) or os.path.exists(encoder_feature_path)
-                if use_cached_encoder:
-                    if is_main:
-                        if _sharded:
-                            print('Found cached encoder features: {} shard(s) in {}'.format(
-                                len(_sharded), encoder_feature_dir))
-                        else:
-                            print('Found cached encoder features: {}'.format(encoder_feature_path))
-                    encoder_model = None
-                    encoder_extract_fn = None
-                else:
-                    from utils.encoder_utils import get_feature_extractor
-                    encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
-                    if is_main:
-                        print('Loaded {} model for cross-attention conditioning'.format(encoder_model_name))
-            else:
-                # use_encoder_cache: false — always extract on-the-fly, ignore any cached files
-                use_cached_encoder = False
-                encoder_feature_path = None
-                from utils.encoder_utils import get_feature_extractor
-                encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
-                if is_main:
-                    print('Loaded {} model for on-the-fly conditioning (cache disabled)'.format(encoder_model_name))
+            from utils.encoder_utils import get_feature_extractor
+            encoder_model, encoder_extract_fn = get_feature_extractor(encoder_model_name, device)
+            if is_main:
+                print('Loaded {} model for cross-attention conditioning'.format(encoder_model_name))
 
     # Check if condition images should be encoded via VQVAE
     encode_cond_image = False
@@ -171,7 +135,6 @@ def train(args):
                                 latent_path=os.path.join(shared_artifact_root,
                                                          train_config['vqvae_latent_dir_name']),
                                 condition_config=condition_config,
-                                encoder_feature_path=encoder_feature_path if ('encoder' in condition_types and use_cached_encoder) else None,
                                 **({'patch_mode': use_patches} if dataset_config['name'] == 'hemit' else {}))
 
     # DDP: use DistributedSampler; otherwise shuffle
@@ -197,11 +160,7 @@ def train(args):
 
     # torch.compile can increase peak memory on some workloads
     if get_config_value(train_config, 'use_torch_compile', False):
-        # suppress_errors: DDP splits the graph into submodules that are recompiled
-        # independently; symbolic-size errors in those submodules would crash training.
-        # With suppress_errors=True those submodules fall back to eager automatically.
-        torch._dynamo.config.suppress_errors = True
-        model = torch.compile(model, dynamic=True)
+        model = torch.compile(model)
 
     # DDP wrap
     if is_ddp:
@@ -397,15 +356,10 @@ def train(args):
                 if 'encoder' in condition_types:
                     encoder_drop_prob = get_config_value(condition_config['encoder_condition_config'],
                                                       'cond_drop_prob', 0.)
-                    if 'encoder' in cond_mb:
-                        # Pre-cached features loaded by dataset (float16) — move to device as float32
-                        encoder_features = cond_mb['encoder'].to(device=device, dtype=torch.float32, non_blocking=True)
-                    else:
-                        # On-the-fly extraction via encoder model
-                        with torch.no_grad():
-                            assert 'image' in cond_mb, 'Encoder conditioning requires image condition input'
-                            encoder_input = cond_input_image_orig if 'image' in condition_types else cond_mb['image'].to(device)
-                            encoder_features = encoder_extract_fn(encoder_input, encoder_model, device)
+                    with torch.no_grad():
+                        assert 'image' in cond_mb, 'Encoder conditioning requires image condition input'
+                        encoder_input = cond_input_image_orig if 'image' in condition_types else cond_mb['image'].to(device)
+                        encoder_features = encoder_extract_fn(encoder_input, encoder_model, device)
                     encoder_features = drop_encoder_condition(encoder_features, im_mb, encoder_drop_prob)
                     cond_mb['encoder'] = encoder_features
                 if 'class' in condition_types:
