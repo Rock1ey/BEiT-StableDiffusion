@@ -362,8 +362,10 @@ def infer(args):
     condition_config = get_config_value(diffusion_model_config, key='condition_config', default_value=None)
     assert condition_config is not None, "No conditioning config found"
     condition_types = get_config_value(condition_config, 'condition_types', [])
-    assert 'image' in condition_types, "No image condition found in config"
-    validate_image_config(condition_config)
+    assert 'image' in condition_types or 'source_concat' in condition_types, \
+        "No image/source_concat condition found in config"
+    if 'image' in condition_types:
+        validate_image_config(condition_config)
 
     # Load feature extractor if needed
     encoder_model = None
@@ -378,7 +380,7 @@ def infer(args):
 
     ########## Load Unet #############
     in_channels = autoencoder_model_config['z_channels']
-    if 'image' in condition_types:
+    if 'source_concat' in condition_types:
         in_channels *= 2
     model = Unet(im_channels=in_channels,
                  out_channels=autoencoder_model_config['z_channels'],
