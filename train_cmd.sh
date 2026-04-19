@@ -17,3 +17,6 @@ torchrun --nproc_per_node=2 -m tools.train_ddpm_cond_hemit --config config/hemit
 
 # 第三步：训练完成后推理（自动使用 EMA 权重）
 python -m tools.sample_ddpm_cond_hemit --config config/hemit_phikon_sc.yaml --full-image --num-samples 8
+
+# 第四步：评估
+python -m tools.evaluate_hemit --config config/hemit_phikon_sc.yaml

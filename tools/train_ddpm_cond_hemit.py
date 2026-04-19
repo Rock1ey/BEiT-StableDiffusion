@@ -69,6 +69,12 @@ def train(args):
     shared_artifact_root = get_config_value(train_config, 'shared_artifact_root',
                                             train_config['task_name'])
 
+    # Fix random seed for reproducibility
+    seed = get_config_value(train_config, 'seed', 1111)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
     lambda_l1 = get_config_value(train_config, 'lambda_l1', 0.5)
     lambda_lpips = get_config_value(train_config, 'lambda_lpips', 0.1)
     lpips_every = max(1, get_config_value(train_config, 'lpips_every', 1))

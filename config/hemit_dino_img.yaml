@@ -1,5 +1,5 @@
 dataset_params:
-  im_path: 'data/hemit'            # Full HEMIT dataset path (update as needed)
+  im_path: 'data/hemit'
   im_channels: 3
   im_size: 256
   name: 'hemit'
@@ -23,7 +23,7 @@ ldm_params:
   num_mid_layers: 2
   num_up_layers: 2
   condition_config:
-    condition_types: [ 'image', 'source_concat', 'encoder' ]   # image-cond (pixel) + source-concat (latent) + encoder cross-attn
+    condition_types: [ 'image', 'encoder' ]   # image-cond (pixel cross-attn) + DINOv2 cross-attn; no source-concat
     image_condition_config:
       image_condition_input_channels: 3
       image_condition_output_channels: 3
@@ -32,8 +32,8 @@ ldm_params:
       cond_drop_prob: 0.05
     encoder_condition_config:
       encoder_embed_dim: 768              # DINOv2 ViT-B/14 output dim
-      encoder_model_name: 'dinov2'        # Use DINOv2 as feature encoder
-      cond_drop_prob: 0.05              # CFG dropout for encoder features
+      encoder_model_name: 'dinov2'
+      cond_drop_prob: 0.05
 
 autoencoder_params:
   z_channels: 4
@@ -50,7 +50,7 @@ autoencoder_params:
 
 train_params:
   seed: 1111
-  task_name: 'hemit_dino'
+  task_name: 'hemit_dino_img'
   shared_artifact_root: 'hemit_shared_artifacts'
   ldm_batch_size: 64
   ldm_micro_batch_size: 0
@@ -78,7 +78,7 @@ train_params:
   num_workers: 12
   vae_latent_dir_name: 'vae_latents'
   vqvae_latent_dir_name: 'vqvae_latents'
-  ldm_ckpt_name: 'ddpm_ckpt_hemit_dino.pth'
+  ldm_ckpt_name: 'ddpm_ckpt_hemit_dino_img.pth'
   vqvae_autoencoder_ckpt_name: 'vqvae_autoencoder_ckpt.pth'
   vae_autoencoder_ckpt_name: 'vae_autoencoder_ckpt.pth'
   vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
@@ -88,13 +88,3 @@ train_params:
   grad_clip: 1.0
   use_amp: True
   use_torch_compile: True
-  vqvae_autoencoder_ckpt_name: 'vqvae_autoencoder_ckpt.pth'
-  vae_autoencoder_ckpt_name: 'vae_autoencoder_ckpt.pth'
-  vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
-  vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
-  lr_scheduler: 'cosine'
-  ldm_lr_min: 0
-  ema_decay: 0.9999
-  grad_clip: 1.0
-  use_amp: True
-  use_torch_compile: true
