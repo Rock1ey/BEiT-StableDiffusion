@@ -81,4 +81,4 @@ train_params:
   ema_decay: 0.9999
   grad_clip: 1.0
   use_amp: True
-  use_torch_compile: True
+  use_torch_compile: false
