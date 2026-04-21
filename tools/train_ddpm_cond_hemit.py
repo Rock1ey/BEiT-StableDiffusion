@@ -164,9 +164,12 @@ def train(args):
 
     model.train()
 
-    # torch.compile can increase peak memory on some workloads
+    # torch.compile: suppress_errors lets DDP subgraph recompilation fall back to eager
+    # when symbolic sizes arise (e.g. variable-length cross-attention with phikon/dinov2).
+    # dynamic=True avoids recompilation for different sequence lengths.
     if get_config_value(train_config, 'use_torch_compile', False):
-        model = torch.compile(model)
+        torch._dynamo.config.suppress_errors = True
+        model = torch.compile(model, dynamic=True)
 
     # DDP wrap
     if is_ddp:
