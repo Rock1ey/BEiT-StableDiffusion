@@ -88,13 +88,3 @@ train_params:
   grad_clip: 1.0
   use_amp: True
   use_torch_compile: false
-  vqvae_autoencoder_ckpt_name: 'vqvae_autoencoder_ckpt.pth'
-  vae_autoencoder_ckpt_name: 'vae_autoencoder_ckpt.pth'
-  vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'
-  vae_discriminator_ckpt_name: 'vae_discriminator_ckpt.pth'
-  lr_scheduler: 'cosine'
-  ldm_lr_min: 0
-  ema_decay: 0.9999
-  grad_clip: 1.0
-  use_amp: True
-  use_torch_compile: true

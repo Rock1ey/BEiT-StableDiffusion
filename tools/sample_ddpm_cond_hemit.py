@@ -102,7 +102,9 @@ def _prepare_cond_input(cond_patch, condition_types, encoder_model=None, encoder
     needs_source = 'image' in condition_types or 'source_concat' in condition_types
     if needs_source:
         cond_image = cond_patch.to(dev)
-        if vae is not None:
+        # image_latent is only needed for source_concat (external channel concat xt+z_src).
+        # image_cond uses pixel/encoded image directly inside the UNet conv_in_concat.
+        if 'source_concat' in condition_types and vae is not None:
             with torch.no_grad():
                 image_latent, _ = vae.encode(cond_image.to(device))
             cond_input['image_latent'] = image_latent.to(dev)

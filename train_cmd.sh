@@ -23,3 +23,9 @@ python -m tools.evaluate_hemit --config config/hemit_phikon_sc.yaml
 
 # phikon_img_cond
 torchrun --nproc_per_node=2 -m tools.train_ddpm_cond_hemit --config config/hemit_phikon_img.yaml
+
+# 推理
+python -m tools.sample_ddpm_cond_hemit --config config/hemit_phikon_img.yaml --full-image --num-samples 8
+
+# 评估
+python -m tools.evaluate_hemit --config config/hemit_phikon_img.yaml
