@@ -17,3 +17,18 @@ python -m tools.evaluate_hemit --config config/hemit_phikon_sc.yaml
 
 # hemit_phikon_v2.yaml 的训练命令（目前和 hemit_phikon_sc.yaml 一样，后续会调整训练参数）
 torchrun --nproc_per_node=2 -m tools.train_ddpm_cond_hemit --config config/hemit_phikon_v2.yaml
+
+# hemit_phikon_v2.yaml 的推理命令
+python -m tools.sample_ddpm_cond_hemit --config config/hemit_phikon_v2.yaml --full-image --num-samples 8
+
+# hemit_phikon_v2.yaml 的评估命令
+python -m tools.evaluate_hemit --config config/hemit_phikon_v2.yaml
+
+# hemit_dino_v2.yaml 的训练命令
+torchrun --nproc_per_node=2 -m tools.train_ddpm_cond_hemit --
+
+# hemit_dino_v2.yaml 的推理命令
+python -m tools.sample_ddpm_cond_hemit --config config/hemit_dino_v2
+
+# hemit_dino_v2.yaml 的评估命令
+python -m tools.evaluate_hemit --config config/hemit_dino_v2.yaml

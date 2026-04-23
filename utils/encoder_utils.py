@@ -12,7 +12,7 @@ def get_dino_model(device, eval_mode=True):
     Load DINOv2 ViT-B/14 model from torch hub.
     Returns patch tokens of shape [B, 256, 768] (16x16 grid, excluding CLS).
     """
-    model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+    model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14', force_reload=False, skip_validation=True)
     model = model.to(device)
     if eval_mode:
         model.eval()
@@ -62,7 +62,7 @@ def get_phikon_model(device, eval_mode=True):
     Output: [B, 196, 768] patch tokens (14x14 grid, patch_size=16).
     """
     from transformers import ViTModel
-    model = ViTModel.from_pretrained("owkin/phikon", add_pooling_layer=False)
+    model = ViTModel.from_pretrained("owkin/phikon", add_pooling_layer=False, local_files_only=True)
     model = model.to(device)
     if eval_mode:
         model.eval()
@@ -75,7 +75,7 @@ def _get_phikon_processor():
     """Get the Phikon image processor (cached at module level)."""
     if not hasattr(_get_phikon_processor, '_proc'):
         from transformers import AutoImageProcessor
-        _get_phikon_processor._proc = AutoImageProcessor.from_pretrained("owkin/phikon")
+        _get_phikon_processor._proc = AutoImageProcessor.from_pretrained("owkin/phikon", local_files_only=True)
     return _get_phikon_processor._proc
 
 

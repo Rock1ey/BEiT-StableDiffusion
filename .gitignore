@@ -18,3 +18,7 @@ __pycache__
 
 # Ignore pickle files
 *.pkl
+
+chapter3_outline.md
+chapter4_outline.md
+paper_notes.md
