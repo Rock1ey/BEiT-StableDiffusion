@@ -25,7 +25,7 @@ python -m tools.sample_ddpm_cond_hemit --config config/hemit_phikon_v2.yaml --fu
 python -m tools.evaluate_hemit --config config/hemit_phikon_v2.yaml
 
 # hemit_dino_v2.yaml 的训练命令
-torchrun --nproc_per_node=2 -m tools.train_ddpm_cond_hemit --
+torchrun --nproc_per_node=2 -m tools.train_ddpm_cond_hemit --config config/hemit_dino_v2.yaml
 
 # hemit_dino_v2.yaml 的推理命令
 python -m tools.sample_ddpm_cond_hemit --config config/hemit_dino_v2

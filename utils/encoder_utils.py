@@ -11,8 +11,22 @@ def get_dino_model(device, eval_mode=True):
     """
     Load DINOv2 ViT-B/14 model from torch hub.
     Returns patch tokens of shape [B, 256, 768] (16x16 grid, excluding CLS).
+    Prefers local hub cache to avoid any network access.
     """
-    model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14', force_reload=False, skip_validation=True)
+    import os
+    import glob
+
+    # torch.hub.load with source='github' always fetches hubconf.py from GitHub,
+    # even when the model weights are already cached — causing 503/timeout errors.
+    # Fix: locate the already-downloaded local hub cache and load from there.
+    hub_dir = torch.hub.get_dir()
+    local_candidates = glob.glob(os.path.join(hub_dir, 'facebookresearch_dinov2*'))
+    if local_candidates:
+        local_path = sorted(local_candidates)[-1]  # pick most recent if multiple
+        model = torch.hub.load(local_path, 'dinov2_vitb14', source='local')
+    else:
+        # Cache not found — fall back to network (first-time download)
+        model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
     model = model.to(device)
     if eval_mode:
         model.eval()

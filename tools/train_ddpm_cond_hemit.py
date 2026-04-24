@@ -3,6 +3,11 @@ import argparse
 import numpy as np
 import csv
 import time
+import os
+# Force offline mode: prevent transformers / HuggingFace hub from hitting the network
+# when models are already cached locally.
+os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
+os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
 from tqdm import tqdm
 from torch.optim import Adam
 from dataset.mnist_dataset import MnistDataset

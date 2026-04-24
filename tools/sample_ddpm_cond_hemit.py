@@ -4,6 +4,9 @@ import torchvision.transforms.functional as TF
 import argparse
 import yaml
 import os
+# Force offline mode for transformers / HuggingFace hub
+os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
+os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
 import numpy as np
 import threading
 from PIL import Image
