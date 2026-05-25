@@ -1,9 +1,9 @@
 dataset_params:
-  im_path: 'data/hemit'
+  im_path: 'data/hemit'            # Full HEMIT dataset path (update as needed)
   im_channels: 3
   im_size: 256
   name: 'hemit'
-  patch_mode: 'grid'
+  patch_mode: 'grid'               # 1024x1024 -> 4x4=16 fixed patches of 256x256
 
 diffusion_params:
   num_timesteps: 1000
@@ -23,13 +23,17 @@ ldm_params:
   num_mid_layers: 2
   num_up_layers: 2
   condition_config:
-    condition_types: [ 'image', 'source_concat' ]
+    condition_types: [ 'image', 'source_concat', 'encoder' ]   # image-cond (pixel) + source-concat (latent) + encoder cross-attn
     image_condition_config:
       image_condition_input_channels: 3
       image_condition_output_channels: 3
       image_condition_h: 256
       image_condition_w: 256
-      cond_drop_prob: 1.0   # disable weak image-conditioning branch; keep source concat only
+      cond_drop_prob: 0.05
+    encoder_condition_config:
+      encoder_embed_dim: 768              # Phikon ViT-B output dim (same as DINOv2)
+      encoder_model_name: 'phikon'        # Use Phikon as feature encoder
+      cond_drop_prob: 0.05
 
 autoencoder_params:
   z_channels: 4
@@ -46,7 +50,7 @@ autoencoder_params:
 
 train_params:
   seed: 1111
-  task_name: 'hemit_concat_only_ldm'
+  task_name: 'hemit_phikon_v2_mse'
   shared_artifact_root: 'hemit_shared_artifacts'
   ldm_batch_size: 48
   ldm_micro_batch_size: 0
@@ -66,14 +70,14 @@ train_params:
   autoencoder_acc_steps: 4
   autoencoder_img_save_steps: 64
   save_latents: True
-  cf_guidance_scale: 2.0
-  lambda_l1: 0.5
-  lambda_lpips: 0.0
+  cf_guidance_scale: 1.5
+  lambda_l1: 0.0                   # L1 loss disabled; MSE-only training
+  lambda_lpips: 0.0                # LPIPS loss disabled; MSE-only training
   lpips_every: 4
   num_workers: 12
   vae_latent_dir_name: 'vae_latents'
   vqvae_latent_dir_name: 'vqvae_latents'
-  ldm_ckpt_name: 'ddpm_ckpt_hemit_concat_only_ldm.pth'
+  ldm_ckpt_name: 'ddpm_ckpt_hemit_phikon_v2_mse.pth'
   vqvae_autoencoder_ckpt_name: 'vqvae_autoencoder_ckpt.pth'
   vae_autoencoder_ckpt_name: 'vae_autoencoder_ckpt.pth'
   vqvae_discriminator_ckpt_name: 'vqvae_discriminator_ckpt.pth'

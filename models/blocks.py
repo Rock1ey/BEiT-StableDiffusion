@@ -459,7 +459,10 @@ class UpBlockUnet(nn.Module):
             if self.up_sample else nn.Identity()
     
     def forward(self, x, out_down=None, t_emb=None, context=None):
+        # Upsample
         x = self.up_sample_conv(x)
+        
+        # skip connection
         if out_down is not None:
             x = torch.cat([x, out_down], dim=1)
         
